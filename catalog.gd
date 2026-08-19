@@ -56,6 +56,16 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 				var entry: Dictionary = asset.duplicate()
 				entry["kit"] = kit_label
 				var rel: String = asset.get("path", "")
+				if String(asset.get("kind", "")) == "composite":
+					# Composite paths are kit-root-relative whatever the
+					# index base: the .tscn IS the placeable scene, and its
+					# thumbnail mirrors Composites/<Name> under thumbnails/.
+					entry["mesh_path"] = "%s/%s" % [kit_dir, rel]
+					entry["path"] = entry["mesh_path"]
+					entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
+						rel.get_basename(), THUMB_EXT]
+					assets.append(entry)
+					continue
 				# The mesh path stays, because the thumbnail is keyed off it and
 				# the index describes the mesh. What gets placed is the wrapper
 				# scene: instancing the glTF directly welds a scene to it, and
