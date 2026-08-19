@@ -68,19 +68,29 @@ static func frame_for(aabb: AABB) -> Dictionary:
 ## Merged world-space bounds of every visual instance. Accumulates transforms
 ## by hand so it works on a tree that is not inside the scene tree.
 static func scene_aabb(root: Node) -> AABB:
-	return _merge_aabb(root, Transform3D.IDENTITY, AABB())
+	var state := _merge_aabb(root, Transform3D.IDENTITY, {"aabb": AABB(), "found": false})
+	return state["aabb"]
 
 
-static func _merge_aabb(node: Node, xform: Transform3D, merged: AABB) -> AABB:
+## Threads {"aabb", "found"} instead of gating on the accumulated AABB's own
+## has_volume() — a zero-thickness instance (a flat plane, a decal) produces
+## an AABB with no volume, and using that as the "nothing merged yet"
+## sentinel would let it get silently replaced by the next instance instead
+## of merged.
+static func _merge_aabb(node: Node, xform: Transform3D, state: Dictionary) -> Dictionary:
 	var local := xform
 	if node is Node3D:
 		local = xform * (node as Node3D).transform
 	if node is VisualInstance3D:
 		var world := local * (node as VisualInstance3D).get_aabb()
-		merged = world if not merged.has_volume() else merged.merge(world)
+		if not state["found"]:
+			state["aabb"] = world
+			state["found"] = true
+		else:
+			state["aabb"] = (state["aabb"] as AABB).merge(world)
 	for child in node.get_children():
-		merged = _merge_aabb(child, local, merged)
-	return merged
+		state = _merge_aabb(child, local, state)
+	return state
 
 
 ## The index's size convention: w x d x h, Godot Y-up, so h is y and d is z.
