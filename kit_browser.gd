@@ -136,7 +136,6 @@ func _build_ui() -> void:
 	_settings_dialog = SettingsDialog.new()
 	_settings_dialog.force_reindex_requested.connect(func() -> void: run_index(true))
 	_settings_dialog.index_requested.connect(func() -> void: run_index(false))
-	_settings_dialog.reload_requested.connect(reload)
 	add_child(_settings_dialog)
 	_index_button = _settings_dialog.index_button
 

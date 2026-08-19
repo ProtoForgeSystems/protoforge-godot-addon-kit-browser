@@ -27,9 +27,8 @@ Then enable it under **Project > Project Settings > Plugins**.
    asset folder: if it holds mesh files directly, with no kit subfolders, the
    root itself becomes a single kit.
 3. In **Settings…**, click **Index**. The addon scans every kit under your
-   roots, writes an `index.json` per kit, and renders any thumbnails that
-   don't exist yet. **Reload** is next to it, to re-read what's already on
-   disk without rescanning.
+   roots, writes an `index.json` per kit, renders any thumbnails that don't
+   exist yet, and re-reads the result back into the dock when it's done.
 4. Browse, search, and drag assets into the 3D viewport to place them.
 
 ## Features

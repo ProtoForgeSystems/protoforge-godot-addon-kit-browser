@@ -1,14 +1,16 @@
 @tool
 extends AcceptDialog
-## Roots, thumbnail resolution, Reload/Index, and the force re-index escape
-## hatch. The dialog edits Settings directly; the dock re-reads on close.
+## Roots, thumbnail resolution, Index, and the force re-index escape hatch.
+## The dialog edits Settings directly; the dock re-reads on close.
 
 const Settings := preload("res://addons/kit_browser/settings.gd")
 
-## Index and Reload used to live on the dock's own rows, but both act on the
-## same roots this dialog configures, so the architect moved them here.
+## Index used to share the dock's own rows with Reload, but both act on the
+## same roots this dialog configures, so the architect moved Index here.
+## Reload itself was removed: Index already ends with a reload, and
+## reload() still runs internally on scene changes, so a standalone button
+## for it was redundant.
 signal index_requested
-signal reload_requested
 signal force_reindex_requested
 
 var _roots: ItemList
@@ -53,14 +55,6 @@ func _init() -> void:
 
 	var action_row := HBoxContainer.new()
 	box.add_child(action_row)
-	var reload_button := Button.new()
-	reload_button.text = "Reload"
-	reload_button.tooltip_text = "Re-read every attached kit's index.json"
-	# Reload does not touch disk beyond reading, so there is nothing to lose
-	# by leaving the dialog open -- unlike Index and Force, which can run for
-	# a while and are more comfortable watched from the dock's status line.
-	reload_button.pressed.connect(func() -> void: reload_requested.emit())
-	action_row.add_child(reload_button)
 	index_button = Button.new()
 	index_button.text = "Index"
 	index_button.tooltip_text = "Scan the asset roots and render missing thumbnails"
