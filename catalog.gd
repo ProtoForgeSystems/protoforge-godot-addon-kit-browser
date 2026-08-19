@@ -6,6 +6,7 @@ extends RefCounted
 ## here; anything that decides how it looks lives in kit_browser.gd.
 
 const Facets := preload("res://addons/kit_browser/facets.gd")
+const Settings := preload("res://addons/kit_browser/settings.gd")
 
 const KITS_DIR := "res://Assets/Kits"
 const VARIANT := "1K"
@@ -13,7 +14,8 @@ const THUMB_DIR := "thumbnails"
 const THUMB_EXT := ".webp"
 
 
-## Every asset from every attached kit's own index.json.
+## Every asset from every indexed kit under every root. Empty kit_roots means
+## the configured roots (Settings.roots()).
 ##
 ## Reads the per-kit indexes rather than catalog/merged_index.json. The merged
 ## file is generated, gitignored and rebuilt by hand, so it goes stale silently:
@@ -21,25 +23,39 @@ const THUMB_EXT := ".webp"
 ## from the merged one for long enough that the weapons looked deleted. Reading
 ## the source of truth means an attached kit cannot be missing from the browser
 ## because someone forgot to re-run a script.
-static func load_assets(kits_dir: String = KITS_DIR, variant: String = VARIANT) -> Array:
+static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
+		variant: String = VARIANT) -> Array:
+	if kit_roots.is_empty():
+		kit_roots = Settings.roots()
 	var assets := []
-	for kit in find_kits(kits_dir):
-		var doc: Variant = _read_json("%s/%s/index.json" % [kits_dir, kit])
-		if typeof(doc) != TYPE_DICTIONARY:
-			continue
-		for asset in doc.get("assets", []):
-			var entry: Dictionary = asset.duplicate()
-			entry["kit"] = kit
-			var mesh := "%s/%s/%s/%s" % [kits_dir, kit, variant, asset.get("path", "")]
-			# The mesh path stays, because the thumbnail is keyed off it and the
-			# index describes the mesh. What gets placed is the wrapper scene:
-			# instancing the glTF directly welds a scene to it, and adding
-			# collision or a script later would then mean editing every scene
-			# that used it. Falls back to the mesh where no wrapper exists yet.
-			entry["mesh_path"] = mesh
-			var wrapper := "%s.tscn" % mesh.get_basename()
-			entry["path"] = wrapper if ResourceLoader.exists(wrapper) else mesh
-			assets.append(entry)
+	for root in kit_roots:
+		for kit in find_kits(root):
+			var kit_dir := "%s/%s" % [root, kit]
+			var doc: Variant = _read_json("%s/index.json" % kit_dir)
+			if typeof(doc) != TYPE_DICTIONARY:
+				continue
+			# Schema 1 predates "base" and its paths were always relative to the
+			# hardcoded 1K variant dir. Schema 2 states where its paths live;
+			# "" means directly under the kit.
+			var base: String = String(doc.get("base", variant)) \
+				if int(doc.get("schema", 1)) >= 2 else variant
+			for asset in doc.get("assets", []):
+				var entry: Dictionary = asset.duplicate()
+				entry["kit"] = kit
+				var rel: String = asset.get("path", "")
+				# The mesh path stays, because the thumbnail is keyed off it and
+				# the index describes the mesh. What gets placed is the wrapper
+				# scene: instancing the glTF directly welds a scene to it, and
+				# adding collision or a script later would then mean editing
+				# every scene that used it. Falls back to the mesh where no
+				# wrapper exists yet.
+				entry["mesh_path"] = ("%s/%s" % [kit_dir, rel]) if base.is_empty() \
+					else ("%s/%s/%s" % [kit_dir, base, rel])
+				entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
+					rel.get_basename(), THUMB_EXT]
+				var wrapper := "%s.tscn" % String(entry["mesh_path"]).get_basename()
+				entry["path"] = wrapper if ResourceLoader.exists(wrapper) else entry["mesh_path"]
+				assets.append(entry)
 	assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if a["kit"] != b["kit"]:
 			return a["kit"] < b["kit"]
@@ -84,25 +100,11 @@ static func _read_json(path: String) -> Variant:
 	return JSON.parse_string(FileAccess.get_file_as_string(path))
 
 
-## "res://Assets/Kits/<kit>/1K/<rest>.gltf" -> ".../<kit>/thumbnails/<rest>.webp"
-##
-## The variant segment is dropped rather than assumed to be "1K": thumbnails are
-## rendered once and shared by every variant, since 1K and 2K differ only in
-## texture resolution.
+## Stamped at load time, where the root, kit and base are all known; deriving
+## it later from string surgery on mesh_path is how the old version came to
+## hardcode the Assets/Kits prefix.
 static func thumbnail_path(asset: Dictionary) -> String:
-	var mesh_path: String = asset.get("mesh_path", asset.get("path", ""))
-	var kit: String = asset.get("kit", "")
-	if mesh_path.is_empty() or kit.is_empty():
-		return ""
-	var prefix := "res://Assets/Kits/%s/" % kit
-	if not mesh_path.begins_with(prefix):
-		return ""
-	var after := mesh_path.substr(prefix.length())
-	var slash := after.find("/")
-	if slash < 0:
-		return ""
-	var rest := after.substr(slash + 1)
-	return "%s%s/%s%s" % [prefix, THUMB_DIR, rest.get_basename(), THUMB_EXT]
+	return asset.get("thumb_path", "")
 
 
 ## Sorted, de-duplicated kit names.
