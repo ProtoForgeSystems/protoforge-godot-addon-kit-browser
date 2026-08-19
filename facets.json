@@ -1,0 +1,42 @@
+{
+	"_comment": [
+		"Browser-only shelf labels. This is NOT the taxonomy in catalog/taxonomy.json",
+		"and must never be merged into it. That one ships inside published kit",
+		"submodules, so it stays conservative and vendor-neutral; this one exists to",
+		"make a dropdown useful and can be wrong at the cost of one confused click.",
+		"",
+		"Matching is by whole token, never by substring. Substrings are what made",
+		"'arch' match Architecture and 'bat' match Battery_Room. Names are split on",
+		"punctuation, on camelCase, and between letters and digits, so Backyard_Chair,",
+		"BackyardChair01 and BACKYARD_CHAIR all yield the token 'chair'. Trailing 's'",
+		"is folded, so 'antennas' finds 'antenna'.",
+		"",
+		"Shelves are tags, not a tree: an asset may sit on several. That is",
+		"deliberate. An exclusive tree needs a priority order, and getting that order",
+		"wrong is what silently emptied a whole kit's floor category once already.",
+		"",
+		"Covers roughly 73% of assets the index calls 'other'. The rest are genuine",
+		"one-offs -- an ammeter, a fire extinguisher -- and 'Uncategorised' says so",
+		"honestly rather than inventing a shelf for them."
+	],
+	"shelves": {
+		"Structure & supports": "support frame beam girder truss column pillar post arch scaffold platform catwalk walkway bridge stair step ladder fence barrier gate wall floor ceiling roof corner trim edge foundation",
+		"Railings & mounts": "rail railing handrail guardrail banister balustrade mount bracket holder hook hanger clamp",
+		"Furniture": "table chair stool sofa couch bed desk bench shelf shelve shelving cabinet cupboard wardrobe locker bookcase drawer nightstand workbench seat",
+		"Lighting": "light lamp lantern bulb neon chandelier torch spotlight lighting",
+		"Pipes & ducts": "pipe tube duct vent ventilation conduit hose valve manifold shaft chimney drain",
+		"Electrical": "cable wire electric electrical socket switch breaker generator battery antenna fuse transformer solar plug panel",
+		"Signage": "sign logo poster label banner billboard placard graffiti arrow text",
+		"Containers": "box crate container barrel canister bucket bin chest sack bag pallet tank jar bottle basket",
+		"Debris & clutter": "trash rubble debris junk scrap garbage dirt broken ruin damaged destroyed waste",
+		"Nature": "rock stone tree plant grass sand crystal foliage bush leaf leave coral shell ice snow water cliff mountain terrain log root mushroom vine moss flower cactus",
+		"Machinery": "machine equipment engine pump turbine motor compressor reactor console terminal device unit hvac",
+		"Vehicles": "car truck van vehicle wheel tire boat ship train cart trailer bike drone",
+		"Kitchen & bath": "sink toilet faucet bath bathroom shower stove oven fridge kitchen mirror towel washer bowl",
+		"Books & paper": "book paper document folder magazine newspaper map library",
+		"Fabric & soft": "curtain cloth fabric rug carpet mattress pillow blanket flag tarp awning",
+		"Weapons & ammo": "ammo bullet grenade holster scope silencer knife axe crowbar gun rifle pistol shotgun weapon",
+		"Buildings": "building house tower hut shed skyscraper",
+		"Decor & props": "statue vase painting picture plaque ornament sculpture clock toy instrument pot"
+	}
+}
