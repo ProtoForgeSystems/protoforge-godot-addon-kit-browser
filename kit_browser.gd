@@ -7,8 +7,11 @@ extends VBoxContainer
 
 const Catalog := preload("res://addons/kit_browser/catalog.gd")
 const AssetList := preload("res://addons/kit_browser/asset_list.gd")
+const Settings := preload("res://addons/kit_browser/settings.gd")
+const Indexer := preload("res://addons/kit_browser/indexer.gd")
+const Thumbnailer := preload("res://addons/kit_browser/thumbnailer.gd")
+const SettingsDialog := preload("res://addons/kit_browser/settings_dialog.gd")
 
-const ICON_PX := 96
 ## Thumbnails are .gdignore'd, so they are files on disk rather than imported
 ## resources and must be decoded by hand. Doing that for 1,575 of them in one
 ## frame locks the editor, so a budget's worth are decoded per frame instead.
@@ -33,6 +36,11 @@ var _status: Label
 var _details: Label
 var _variants: PopupMenu
 var _variant_assets: Array = []
+
+var _icon_px: int = Settings.tile_size()
+var _index_button: Button
+var _settings_dialog: AcceptDialog
+var _indexing := false
 
 
 func _ready() -> void:
@@ -78,14 +86,35 @@ func _build_ui() -> void:
 	refresh.pressed.connect(reload)
 	row2.add_child(refresh)
 
+	var slider := HSlider.new()
+	slider.min_value = 48
+	slider.max_value = 256
+	slider.step = 8
+	slider.value = _icon_px
+	slider.custom_minimum_size.x = 80
+	slider.tooltip_text = "Tile size"
+	slider.value_changed.connect(func(v: float) -> void: set_tile_size(int(v)))
+	row2.add_child(slider)
+
+	_index_button = Button.new()
+	_index_button.text = "Index"
+	_index_button.tooltip_text = "Scan the asset roots and render missing thumbnails"
+	_index_button.pressed.connect(func() -> void: run_index(false))
+	row2.add_child(_index_button)
+
+	var settings_button := Button.new()
+	settings_button.text = "Settings…"
+	settings_button.pressed.connect(func() -> void: _settings_dialog.popup_centered())
+	row2.add_child(settings_button)
+
 	_list = AssetList.new()
 	# Long vendor names are trimmed to the tile rather than widening it. The
 	# tooltip carries the full name and taxonomy, so nothing is lost.
 	_list.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_list.fixed_column_width = ICON_PX + 24
+	_list.fixed_column_width = _icon_px + 24
 	_list.max_columns = 0                        # as many columns as fit
 	_list.icon_mode = ItemList.ICON_MODE_TOP
-	_list.fixed_icon_size = Vector2i(ICON_PX, ICON_PX)
+	_list.fixed_icon_size = Vector2i(_icon_px, _icon_px)
 	_list.same_column_width = true
 	_list.select_mode = ItemList.SELECT_MULTI
 	_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -93,6 +122,10 @@ func _build_ui() -> void:
 	_list.item_activated.connect(_on_activated)
 	_list.item_clicked.connect(_on_clicked)
 	add_child(_list)
+
+	_settings_dialog = SettingsDialog.new()
+	_settings_dialog.force_reindex_requested.connect(func() -> void: run_index(true))
+	add_child(_settings_dialog)
 
 	_variants = PopupMenu.new()
 	_variants.id_pressed.connect(_on_variant_chosen)
@@ -138,6 +171,74 @@ func _retip(picker: OptionButton) -> void:
 ## The editor opened, closed or switched scenes.
 func on_scene_changed(_root: Node = null) -> void:
 	_refresh_status()
+
+
+func set_tile_size(px: int) -> void:
+	_icon_px = px
+	Settings.set_tile_size(px)
+	_list.fixed_icon_size = Vector2i(px, px)
+	_list.fixed_column_width = px + 24
+	_icon_cache.clear()          # icons were resized to the old px
+	_apply()
+
+
+## Scan the configured asset roots and render any thumbnails missing or stale.
+## A failed mesh is recorded and the run carries on -- same rule as the
+## pipeline. Guarded behind Engine.is_editor_hint(): headless construction
+## must be able to build the dock without touching EditorInterface, and the
+## button that reaches this is only pressable inside a running editor anyway.
+func run_index(force: bool = false) -> void:
+	if _indexing:
+		return
+	_indexing = true
+	_index_button.disabled = true
+	var renderer: Node = Thumbnailer.new()
+	add_child(renderer)
+	renderer.setup()
+	var failures := PackedStringArray()
+	var skipped_kits := PackedStringArray()
+
+	for root in Settings.roots():
+		for kit in Indexer.find_kits(root):
+			var kit_dir := "%s/%s" % [root, kit]
+			var old: Variant = null
+			if FileAccess.file_exists("%s/index.json" % kit_dir):
+				old = JSON.parse_string(FileAccess.get_file_as_string(
+					"%s/index.json" % kit_dir))
+			if not Indexer.can_overwrite(old, force):
+				skipped_kits.append(kit)
+				continue
+			var scanned := Indexer.scan_kit(kit_dir)
+			var plan := Indexer.plan(scanned, old,
+				Indexer.existing_thumbs(kit_dir), force)
+			var entries: Array = plan["entries"]
+			var jobs: Array = plan["render"]
+			for j in jobs.size():
+				var entry: Dictionary = entries[jobs[j]]
+				_status.text = "Indexing %s — %d/%d" % [kit, j + 1, jobs.size()]
+				var out := "%s/%s/%s%s" % [kit_dir, Indexer.THUMB_DIR,
+					String(entry["path"]).get_basename(), Indexer.THUMB_EXT]
+				var result: Dictionary = await renderer.render_one(
+					"%s/%s" % [kit_dir, entry["path"]], out, Settings.resolution())
+				if result["ok"]:
+					entry["size_m"] = result["size_m"]
+				else:
+					failures.append("%s/%s" % [kit, entry["path"]])
+			if not entries.is_empty() or old != null:
+				Indexer.write_index(kit_dir, Indexer.build_doc(entries))
+
+	renderer.queue_free()
+	_indexing = false
+	_index_button.disabled = false
+	reload()
+	var note := "Indexed."
+	if not skipped_kits.is_empty():
+		note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
+	if not failures.is_empty():
+		note += " %d assets failed to render (see Output)." % failures.size()
+		for f in failures:
+			push_warning("Kit Browser: could not thumbnail %s" % f)
+	_status.text = note
 
 
 ## Re-read the index from disk and rebuild the facet dropdowns.
@@ -214,7 +315,7 @@ func _populate() -> void:
 ## not after.
 func _refresh_status() -> void:
 	if _all.is_empty():
-		_status.text = "No kit indexes found. Run tools/index_kit.py."
+		_status.text = "No kit indexes found — set asset roots in Settings, then Index."
 		return
 
 	var counted := ("%d tiles of %d assets" % [_shown.size(), _all.size()]
@@ -302,7 +403,7 @@ func _load_icon(res_path: String) -> Texture2D:
 	if image.load(ProjectSettings.globalize_path(res_path)) != OK:
 		_icon_cache[res_path] = null
 		return null
-	image.resize(ICON_PX, ICON_PX, Image.INTERPOLATE_LANCZOS)
+	image.resize(_icon_px, _icon_px, Image.INTERPOLATE_LANCZOS)
 	var texture := ImageTexture.create_from_image(image)
 	_icon_cache[res_path] = texture
 	return texture
