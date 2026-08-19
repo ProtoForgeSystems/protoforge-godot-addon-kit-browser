@@ -42,6 +42,19 @@ var _index_button: Button
 var _settings_dialog: AcceptDialog
 var _indexing := false
 
+## Godot 4.7 has no scriptable editor-progress API (EditorProgress is a C++-
+## only class; EditorPlugin/EditorInterface expose no progress_add_task in
+## GDScript), so this is a small popup of our own rather than a wrapper
+## around one. A PopupPanel, not an AcceptDialog: there is no OK/close
+## button to keep out of the way in the first place, and a run must not be
+## dismissable mid-flight. If the user closes it anyway (Escape, or a
+## platform window-manager control), the index run itself does not read its
+## visibility and carries on regardless -- the popup is a status window, not
+## a gate.
+var _progress_popup: PopupPanel
+var _progress_label: Label
+var _progress_bar: ProgressBar
+
 
 func _ready() -> void:
 	name = "Kits"
@@ -130,6 +143,20 @@ func _build_ui() -> void:
 	_variants = PopupMenu.new()
 	_variants.id_pressed.connect(_on_variant_chosen)
 	add_child(_variants)
+
+	_progress_popup = PopupPanel.new()
+	_progress_popup.exclusive = true
+	var progress_box := VBoxContainer.new()
+	progress_box.custom_minimum_size = Vector2(320, 0)
+	progress_box.add_theme_constant_override("separation", 6)
+	_progress_popup.add_child(progress_box)
+	_progress_label = Label.new()
+	_progress_label.text = "Indexing…"
+	progress_box.add_child(_progress_label)
+	_progress_bar = ProgressBar.new()
+	_progress_bar.show_percentage = false
+	progress_box.add_child(_progress_bar)
+	add_child(_progress_popup)
 
 	_status = Label.new()
 	_status.add_theme_font_size_override("font_size", 11)
@@ -238,9 +265,19 @@ func run_index(force: bool = false) -> void:
 				renderer = Thumbnailer.new()
 				add_child(renderer)
 				renderer.setup()
+			if not jobs.is_empty() and not _progress_popup.visible:
+				_progress_popup.popup_centered()
 			for j in jobs.size():
 				var entry: Dictionary = entries[jobs[j]]
-				_status.text = "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
+				var note := "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
+				_status.text = note
+				# Per-kit max rather than a total across every kit: the total
+				# is only known after every kit's plan has run, and re-scanning
+				# every kit up front just to size a bar is not worth the extra
+				# pass over disk.
+				_progress_label.text = note
+				_progress_bar.max_value = jobs.size()
+				_progress_bar.value = j + 1
 				var out := "%s/%s/%s%s" % [kit_dir, Indexer.THUMB_DIR,
 					String(entry["path"]).get_basename(), Indexer.THUMB_EXT]
 				var result: Dictionary = await renderer.render_one(
@@ -258,6 +295,9 @@ func run_index(force: bool = false) -> void:
 
 	if renderer != null:
 		renderer.queue_free()
+	# Unconditional: covers the zero-kits and all-skipped paths too, where
+	# the popup was never shown, as well as the ordinary case where it was.
+	_progress_popup.hide()
 	_indexing = false
 	_index_button.disabled = false
 	reload()
@@ -285,7 +325,26 @@ func reload() -> void:
 	_fill_picker(_kit_pick, "All kits", Catalog.kits_of(_all))
 	_fill_picker(_cat_pick, "All shelves", Catalog.shelves_of(_all))
 	_fill_picker(_bay_pick, "All bays", Catalog.bays_of(_all))
+	_refresh_review_visibility()
 	_apply()
+
+
+## "Needs review" only means anything against the ProtoForge pipeline's
+## classifier, which is the sole writer of needs_review: true. A library made
+## up entirely of addon-indexed public kits never sets it, and offering the
+## checkbox there is a control with nothing behind it. Hidden rather than
+## disabled, so it does not sit there unexplained; unchecked on hide so a
+## check made while it was still relevant cannot silently filter out every
+## asset in a library that no longer has anything flagged.
+func _refresh_review_visibility() -> void:
+	var relevant := false
+	for a in _all:
+		if a.get("needs_review", false):
+			relevant = true
+			break
+	_review_only.visible = relevant
+	if not relevant:
+		_review_only.button_pressed = false
 
 
 func _fill_picker(picker: OptionButton, all_label: String, values: PackedStringArray) -> void:

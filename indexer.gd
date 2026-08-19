@@ -237,7 +237,6 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 			"mtime": file["mtime"],
 			"category": parts[0].to_lower() if parts.size() > 1 else "",
 			"subcategory": parts[1].to_lower() if parts.size() > 2 else "",
-			"needs_review": false,
 		})
 	return {"entries": entries, "render": render}
 
