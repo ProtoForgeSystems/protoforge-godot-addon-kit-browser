@@ -5,15 +5,18 @@ extends Node
 ## Orthographic 3/4 view, key/fill/rim lights, AABB-fit framing — a 0.1 m
 ## handle and a 20 m bridge frame identically.
 
-const VIEW_DIR := Vector3(1.0, -1.2, 0.8)
+## Front-left-above, converted from tools/blender_thumbnail.py's Blender-space
+## (Z-up) camera direction via (x, y, z) -> (x, z, -y).
+const VIEW_DIR := Vector3(1.0, 0.8, 1.2)
 const MARGIN := 1.06
-## (euler degrees, energy) per light. Starting values transliterated from
-## tools/blender_thumbnail.py's sun rig; the quality gate (side-by-side with
-## Blender renders) is what settles them — adjust there, not here first.
+## (travel direction, energy) per light, in Godot space. Starting values
+## transliterated from tools/blender_thumbnail.py's sun rig; the quality gate
+## (side-by-side with Blender renders) is what settles them — adjust there,
+## not here first.
 const LIGHTS := [
-	[Vector3(-50, 0, 40), 1.2],
-	[Vector3(-20, 0, -120), 0.5],
-	[Vector3(-110, 0, 160), 0.6],
+	[Vector3(0.5, -1.5, -1.0), 1.2],
+	[Vector3(-1.5, -0.3, -0.8), 0.5],
+	[Vector3(0.3, -1.0, 1.2), 0.6],
 ]
 
 var _viewport: SubViewport
@@ -28,6 +31,27 @@ func setup() -> void:
 	_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	add_child(_viewport)
 
+	# A flat-color sky, not just a flat ambient term: tools/blender_thumbnail.py's
+	# background feeds EEVEE's world lighting AND its reflections, and metallic
+	# kit materials read as flat black without a reflection source to catch —
+	# ambient diffuse alone is not enough. transparent_bg still yields a
+	# transparent PNG/webp; the sky only feeds lighting, it is never composited.
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = Color(0.55, 0.57, 0.62)
+	sky_mat.sky_horizon_color = Color(0.55, 0.57, 0.62)
+	sky_mat.ground_bottom_color = Color(0.55, 0.57, 0.62)
+	sky_mat.ground_horizon_color = Color(0.55, 0.57, 0.62)
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_energy = 1.6
+	var world := World3D.new()
+	world.environment = env
+	_viewport.world_3d = world
+
 	_camera = Camera3D.new()
 	_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	_viewport.add_child(_camera)
@@ -35,8 +59,9 @@ func setup() -> void:
 
 	for light in LIGHTS:
 		var sun := DirectionalLight3D.new()
-		var deg: Vector3 = light[0]
-		sun.rotation_degrees = deg
+		var dir: Vector3 = (light[0] as Vector3).normalized()
+		var up := Vector3.UP if absf(dir.dot(Vector3.UP)) < 0.999 else Vector3.FORWARD
+		sun.basis = Basis.looking_at(dir, up)
 		sun.light_energy = light[1]
 		_viewport.add_child(sun)
 
