@@ -17,6 +17,11 @@ const THUMB_EXT := ".webp"
 ## on what counts as a kit, but a vendor's un-indexed siblings are still
 ## kits here (there is nothing to index yet), where the catalog would have
 ## nothing to read for them.
+##
+## When none of that finds a kit and the root itself directly holds at least
+## one mesh file, the root is the kit: "." is returned alone. A root pointed
+## straight at a flat asset folder (no subdirectories at all) used to yield
+## an empty array and Index would silently do nothing.
 static func find_kits(root: String) -> PackedStringArray:
 	var dir := DirAccess.open(root)
 	if dir == null:
@@ -39,7 +44,18 @@ static func find_kits(root: String) -> PackedStringArray:
 		else:
 			out.append(entry)
 	out.sort()
+	if out.is_empty() and _has_mesh_file(dir):
+		out.append(".")
 	return out
+
+
+## Non-recursive: at least one MESH_EXTS file sitting directly in the
+## directory the DirAccess is already open on.
+static func _has_mesh_file(dir: DirAccess) -> bool:
+	for file in dir.get_files():
+		if MESH_EXTS.has(file.get_extension().to_lower()):
+			return true
+	return false
 
 
 static func scan_kit(kit_dir: String) -> Array:

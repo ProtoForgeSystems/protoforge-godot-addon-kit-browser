@@ -80,11 +80,6 @@ func _build_ui() -> void:
 	_group_variants.button_pressed = true
 	_group_variants.toggled.connect(func(_p: bool) -> void: _apply())
 	row2.add_child(_group_variants)
-	var refresh := Button.new()
-	refresh.text = "Reload"
-	refresh.tooltip_text = "Re-read every attached kit's index.json"
-	refresh.pressed.connect(reload)
-	row2.add_child(refresh)
 
 	var slider := HSlider.new()
 	slider.min_value = 48
@@ -95,12 +90,6 @@ func _build_ui() -> void:
 	slider.tooltip_text = "Tile size"
 	slider.value_changed.connect(func(v: float) -> void: set_tile_size(int(v)))
 	row2.add_child(slider)
-
-	_index_button = Button.new()
-	_index_button.text = "Index"
-	_index_button.tooltip_text = "Scan the asset roots and render missing thumbnails"
-	_index_button.pressed.connect(func() -> void: run_index(false))
-	row2.add_child(_index_button)
 
 	var settings_button := Button.new()
 	settings_button.text = "Settings…"
@@ -125,7 +114,10 @@ func _build_ui() -> void:
 
 	_settings_dialog = SettingsDialog.new()
 	_settings_dialog.force_reindex_requested.connect(func() -> void: run_index(true))
+	_settings_dialog.index_requested.connect(func() -> void: run_index(false))
+	_settings_dialog.reload_requested.connect(reload)
 	add_child(_settings_dialog)
+	_index_button = _settings_dialog.index_button
 
 	_variants = PopupMenu.new()
 	_variants.id_pressed.connect(_on_variant_chosen)
@@ -192,31 +184,42 @@ func run_index(force: bool = false) -> void:
 		return
 	_indexing = true
 	_index_button.disabled = true
-	var renderer: Node = Thumbnailer.new()
-	add_child(renderer)
-	renderer.setup()
+	# The renderer is only spawned once there is an actual render job: a
+	# no-op run (nothing new, or zero kits found) used to still stand up a
+	# SubViewport for nothing and log a spurious "scenario is null" error in
+	# a fresh project with no roots configured yet.
+	var renderer: Node = null
 	var failures := PackedStringArray()
 	var skipped_kits := PackedStringArray()
 	var write_failures := PackedStringArray()
+	var kits_found := 0
 
 	for root in Settings.roots():
 		for kit in Indexer.find_kits(root):
-			var kit_dir := "%s/%s" % [root, kit]
+			kits_found += 1
+			# "." means the root itself is the kit; every other kit name nests
+			# under root. No path ever gets an "/." segment appended.
+			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
+			var kit_label := root.get_file() if kit == "." else kit
 			var old: Variant = null
 			if FileAccess.file_exists("%s/index.json" % kit_dir):
 				old = JSON.parse_string(FileAccess.get_file_as_string(
 					"%s/index.json" % kit_dir))
 			if not Indexer.can_overwrite(old, force):
-				skipped_kits.append(kit)
+				skipped_kits.append(kit_label)
 				continue
 			var scanned := Indexer.scan_kit(kit_dir)
 			var plan := Indexer.plan(scanned, old,
 				Indexer.existing_thumbs(kit_dir), force)
 			var entries: Array = plan["entries"]
 			var jobs: Array = plan["render"]
+			if not jobs.is_empty() and renderer == null:
+				renderer = Thumbnailer.new()
+				add_child(renderer)
+				renderer.setup()
 			for j in jobs.size():
 				var entry: Dictionary = entries[jobs[j]]
-				_status.text = "Indexing %s — %d/%d" % [kit, j + 1, jobs.size()]
+				_status.text = "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
 				var out := "%s/%s/%s%s" % [kit_dir, Indexer.THUMB_DIR,
 					String(entry["path"]).get_basename(), Indexer.THUMB_EXT]
 				var result: Dictionary = await renderer.render_one(
@@ -224,27 +227,33 @@ func run_index(force: bool = false) -> void:
 				if result["ok"]:
 					entry["size_m"] = result["size_m"]
 				else:
-					failures.append("%s/%s" % [kit, entry["path"]])
+					failures.append("%s/%s" % [kit_label, entry["path"]])
 			if not entries.is_empty() or old != null:
 				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(entries))
 				if write_err != OK:
 					push_warning("Kit Browser: could not write index.json for %s (%s)"
-						% [kit, write_err])
-					write_failures.append(kit)
+						% [kit_label, write_err])
+					write_failures.append(kit_label)
 
-	renderer.queue_free()
+	if renderer != null:
+		renderer.queue_free()
 	_indexing = false
 	_index_button.disabled = false
 	reload()
-	var note := "Indexed."
-	if not skipped_kits.is_empty():
-		note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
-	if not failures.is_empty():
-		note += " %d assets failed to render (see Output)." % failures.size()
-		for f in failures:
-			push_warning("Kit Browser: could not thumbnail %s" % f)
-	if not write_failures.is_empty():
-		note += " %d kit indexes failed to write (see Output)." % write_failures.size()
+	var note: String
+	if kits_found == 0:
+		note = ("No kits found under the configured roots — each root's " +
+			"subfolders are kits, or the root itself if it holds meshes.")
+	else:
+		note = "Indexed."
+		if not skipped_kits.is_empty():
+			note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
+		if not failures.is_empty():
+			note += " %d assets failed to render (see Output)." % failures.size()
+			for f in failures:
+				push_warning("Kit Browser: could not thumbnail %s" % f)
+		if not write_failures.is_empty():
+			note += " %d kit indexes failed to write (see Output)." % write_failures.size()
 	_status.text = note
 
 

@@ -30,7 +30,9 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 	var assets := []
 	for root in kit_roots:
 		for kit in find_kits(root):
-			var kit_dir := "%s/%s" % [root, kit]
+			# "." means the root itself is the kit (a flat folder of meshes with
+			# no subdirectories); every other kit name nests under root.
+			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
 			var doc: Variant = _read_json("%s/index.json" % kit_dir)
 			if typeof(doc) != TYPE_DICTIONARY:
 				continue
@@ -39,9 +41,12 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 			# "" means directly under the kit.
 			var base: String = String(doc.get("base", variant)) \
 				if int(doc.get("schema", 1)) >= 2 else variant
+			# The dropdown shows the root's own basename rather than ".", which
+			# would be meaningless in a "Kit" filter.
+			var kit_label := root.get_file() if kit == "." else kit
 			for asset in doc.get("assets", []):
 				var entry: Dictionary = asset.duplicate()
-				entry["kit"] = kit
+				entry["kit"] = kit_label
 				var rel: String = asset.get("path", "")
 				# The mesh path stays, because the thumbnail is keyed off it and
 				# the index describes the mesh. What gets placed is the wrapper
@@ -73,6 +78,10 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 ## without its own index.json is searched one level deeper. Anything with no
 ## index at either level is simply skipped -- an exported-but-unindexed kit and
 ## an unchecked-out submodule both look like that, and neither is an error here.
+##
+## "." is returned first when kits_dir itself has an index.json directly in
+## it -- the root-as-kit case, where indexer.gd's find_kits wrote the index
+## for the root rather than for a subdirectory.
 static func find_kits(kits_dir: String = KITS_DIR) -> PackedStringArray:
 	var out := PackedStringArray()
 	for entry in _subdirs(kits_dir):
@@ -84,6 +93,8 @@ static func find_kits(kits_dir: String = KITS_DIR) -> PackedStringArray:
 			if FileAccess.file_exists("%s/%s/index.json" % [kits_dir, nested]):
 				out.append(nested)
 	out.sort()
+	if FileAccess.file_exists("%s/index.json" % kits_dir):
+		out = PackedStringArray(["."]) + out
 	return out
 
 
