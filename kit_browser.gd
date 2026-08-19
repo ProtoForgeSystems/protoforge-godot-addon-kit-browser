@@ -81,20 +81,28 @@ func _build_ui() -> void:
 	_group_variants.toggled.connect(func(_p: bool) -> void: _apply())
 	row2.add_child(_group_variants)
 
+	var settings_button := Button.new()
+	settings_button.text = "Settings…"
+	settings_button.pressed.connect(func() -> void: _settings_dialog.popup_centered())
+	row2.add_child(settings_button)
+
+	# Its own row: a slider sharing a flow row with checkboxes wraps
+	# unpredictably and gets squeezed to whatever width is left over.
+	var row3 := HBoxContainer.new()
+	add_child(row3)
+	var size_label := Label.new()
+	size_label.text = "Tile size"
+	row3.add_child(size_label)
+
 	var slider := HSlider.new()
 	slider.min_value = 48
 	slider.max_value = 256
 	slider.step = 8
 	slider.value = _icon_px
-	slider.custom_minimum_size.x = 80
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.tooltip_text = "Tile size"
 	slider.value_changed.connect(func(v: float) -> void: set_tile_size(int(v)))
-	row2.add_child(slider)
-
-	var settings_button := Button.new()
-	settings_button.text = "Settings…"
-	settings_button.pressed.connect(func() -> void: _settings_dialog.popup_centered())
-	row2.add_child(settings_button)
+	row3.add_child(slider)
 
 	_list = AssetList.new()
 	# Long vendor names are trimmed to the tile rather than widening it. The
@@ -193,13 +201,21 @@ func run_index(force: bool = false) -> void:
 	var skipped_kits := PackedStringArray()
 	var write_failures := PackedStringArray()
 	var kits_found := 0
+	# Overlapping roots (e.g. "res://assets" and "res://assets/CombatProps")
+	# resolve the same kit directory from two different roots; indexed once
+	# under either root, not once per root it is reachable from.
+	var indexed_dirs := {}
 
 	for root in Settings.roots():
 		for kit in Indexer.find_kits(root):
-			kits_found += 1
 			# "." means the root itself is the kit; every other kit name nests
 			# under root. No path ever gets an "/." segment appended.
 			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
+			var norm_dir := kit_dir.rstrip("/")
+			if indexed_dirs.has(norm_dir):
+				continue
+			indexed_dirs[norm_dir] = true
+			kits_found += 1
 			var kit_label := root.get_file() if kit == "." else kit
 			var old: Variant = null
 			if FileAccess.file_exists("%s/index.json" % kit_dir):
@@ -213,6 +229,11 @@ func run_index(force: bool = false) -> void:
 				Indexer.existing_thumbs(kit_dir), force)
 			var entries: Array = plan["entries"]
 			var jobs: Array = plan["render"]
+			# Recomputed over kept and fresh entries together: an unchanged
+			# asset keeps its old entry (mtime/thumbnail skip is untouched),
+			# but a re-indexed sibling arriving alongside it can still change
+			# the family it belongs to.
+			Indexer.annotate_families(entries)
 			if not jobs.is_empty() and renderer == null:
 				renderer = Thumbnailer.new()
 				add_child(renderer)

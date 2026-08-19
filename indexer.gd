@@ -8,6 +8,63 @@ const MESH_EXTS := ["glb", "gltf", "fbx", "obj", "blend", "dae"]
 const GENERATOR := "addon"
 const THUMB_DIR := "thumbnails"
 const THUMB_EXT := ".webp"
+const MIN_FAMILY := 2
+
+## Mirrors catalog/variants.py's _MARKER and _DIMENSION exactly -- the addon
+## indexer and the pipeline must agree on what a variant marker is, or the
+## same kit groups differently depending on which one indexed it. Compiled
+## once, lazily: RegEx has no literal syntax, so it cannot be a const.
+static var _marker_re: RegEx
+static var _dimension_re: RegEx
+
+
+static func _ensure_regex() -> void:
+	if _marker_re != null:
+		return
+	_marker_re = RegEx.new()
+	_marker_re.compile("(?i)_*(\\d{1,3})([a-z])?_*$")
+	_dimension_re = RegEx.new()
+	_dimension_re.compile("(?i)\\d(m|cm|mm|k)$")
+
+
+## The name this mesh is a variant of, or the name itself if it is not one.
+## Where a marker carries both digits and a letter the digits are kept:
+## SM_Rifle_02a through SM_Rifle_67h are different rifles that share finish
+## letters, and stripping both would present distinct weapons as one family.
+static func family_of(name: String) -> String:
+	_ensure_regex()
+	var m := _marker_re.search(name)
+	if m == null:
+		return name
+	if _dimension_re.search(m.get_string(0)) != null:
+		return name
+	var cut: String = name.substr(0, m.get_start(2)) if m.get_string(2) != "" \
+		else name.substr(0, m.get_start(0))
+	cut = cut.rstrip("_")
+	return cut if not cut.is_empty() else name
+
+
+## Adds or removes "family" on every entry, computed over the full list
+## together -- a kept entry from an old index can gain or lose siblings as
+## other entries in the same kit come and go, so every entry is recomputed
+## rather than only the freshly (re)scanned ones. Single-member families get
+## no field: the field exists to say "there are others", and alone it would
+## say nothing.
+static func annotate_families(entries: Array) -> void:
+	var grouped := {}
+	for e in entries:
+		var fam := family_of(e.get("name", ""))
+		if not grouped.has(fam):
+			grouped[fam] = []
+		grouped[fam].append(e)
+	for fam in grouped:
+		var members: Array = grouped[fam]
+		var keep: bool = members.size() >= MIN_FAMILY
+		for e in members:
+			if keep:
+				e["family"] = fam
+			else:
+				e.erase("family")
 
 
 ## Kits directly under root; kits one level down inside a vendor directory

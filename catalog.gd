@@ -28,11 +28,19 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 	if kit_roots.is_empty():
 		kit_roots = Settings.roots()
 	var assets := []
+	# Overlapping roots (e.g. "res://assets" and "res://assets/CombatProps")
+	# can resolve the same kit directory twice -- once as a subdir kit of one
+	# root, once as "." of the other -- and would otherwise double-load it.
+	var seen_dirs := {}
 	for root in kit_roots:
 		for kit in find_kits(root):
 			# "." means the root itself is the kit (a flat folder of meshes with
 			# no subdirectories); every other kit name nests under root.
 			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
+			var norm_dir := kit_dir.rstrip("/")
+			if seen_dirs.has(norm_dir):
+				continue
+			seen_dirs[norm_dir] = true
 			var doc: Variant = _read_json("%s/index.json" % kit_dir)
 			if typeof(doc) != TYPE_DICTIONARY:
 				continue
