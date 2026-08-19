@@ -79,9 +79,13 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 ## index at either level is simply skipped -- an exported-but-unindexed kit and
 ## an unchecked-out submodule both look like that, and neither is an error here.
 ##
-## "." is returned first when kits_dir itself has an index.json directly in
-## it -- the root-as-kit case, where indexer.gd's find_kits wrote the index
-## for the root rather than for a subdirectory.
+## "." is returned alone when kits_dir itself has an index.json directly in
+## it AND no other kits were found -- the root-as-kit case, where
+## indexer.gd's find_kits wrote the index for the root rather than for a
+## subdirectory. Mirrors indexer.gd's own exclusivity guard: a root that has
+## since grown real kit subdirectories must not also surface a stale
+## root-level index left over from before the reorganization -- that would
+## double-list the same assets under "." and under their new kit.
 static func find_kits(kits_dir: String = KITS_DIR) -> PackedStringArray:
 	var out := PackedStringArray()
 	for entry in _subdirs(kits_dir):
@@ -93,8 +97,8 @@ static func find_kits(kits_dir: String = KITS_DIR) -> PackedStringArray:
 			if FileAccess.file_exists("%s/%s/index.json" % [kits_dir, nested]):
 				out.append(nested)
 	out.sort()
-	if FileAccess.file_exists("%s/index.json" % kits_dir):
-		out = PackedStringArray(["."]) + out
+	if out.is_empty() and FileAccess.file_exists("%s/index.json" % kits_dir):
+		out.append(".")
 	return out
 
 
