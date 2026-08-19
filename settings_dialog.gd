@@ -78,6 +78,7 @@ func _pick_root() -> void:
 			Settings.set_roots(roots)
 		_refresh()
 		dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
 	add_child(dialog)
 	dialog.popup_centered_ratio(0.5)
 

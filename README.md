@@ -22,7 +22,7 @@ Then enable it under **Project > Project Settings > Plugins**.
 ## Quick start
 
 1. Enable the plugin. A **Kit Browser** dock appears in the editor.
-2. Open **Settings** (gear icon in the dock) and add a folder as an asset
+2. Open **Settings…** (in the dock) and add a folder as an asset
    root — each subfolder of a root is treated as one kit.
 3. Click **Index**. The addon scans every kit under your roots, writes an
    `index.json` per kit, and renders any thumbnails that don't exist yet.

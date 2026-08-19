@@ -10,11 +10,34 @@ const THUMB_DIR := "thumbnails"
 const THUMB_EXT := ".webp"
 
 
+## Kits directly under root; kits one level down inside a vendor directory
+## (a subdirectory that holds several kits rather than being one itself,
+## e.g. "Deckogon/Safehouse") are returned as "Vendor/Kit". Mirrors
+## catalog.gd's find_kits so the addon indexer and the browsing catalog agree
+## on what counts as a kit, but a vendor's un-indexed siblings are still
+## kits here (there is nothing to index yet), where the catalog would have
+## nothing to read for them.
 static func find_kits(root: String) -> PackedStringArray:
 	var dir := DirAccess.open(root)
 	if dir == null:
 		return PackedStringArray()
-	var out := dir.get_directories()
+	var out := PackedStringArray()
+	for entry in dir.get_directories():
+		if FileAccess.file_exists("%s/%s/index.json" % [root, entry]):
+			out.append(entry)
+			continue
+		var sub_dir := DirAccess.open("%s/%s" % [root, entry])
+		var subs := sub_dir.get_directories() if sub_dir != null else PackedStringArray()
+		var is_vendor := false
+		for sub in subs:
+			if FileAccess.file_exists("%s/%s/%s/index.json" % [root, entry, sub]):
+				is_vendor = true
+				break
+		if is_vendor:
+			for sub in subs:
+				out.append("%s/%s" % [entry, sub])
+		else:
+			out.append(entry)
 	out.sort()
 	return out
 

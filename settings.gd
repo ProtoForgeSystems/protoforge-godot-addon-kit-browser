@@ -16,9 +16,13 @@ static func roots() -> PackedStringArray:
 	var stored: Variant = ProjectSettings.get_setting(ROOTS_KEY, PackedStringArray())
 	var out := PackedStringArray(stored)
 	# The unconfigured default is this pipeline's own layout, so the addon works
-	# in ProtoForge repos with zero setup and prompts everyone else once.
-	if out.is_empty() and DirAccess.dir_exists_absolute(
-			ProjectSettings.globalize_path(DEFAULT_ROOT)):
+	# in ProtoForge repos with zero setup and prompts everyone else once. Only
+	# applies before anything has ever been stored -- once the setting exists,
+	# an explicitly emptied list (the user removed the last root) must stay
+	# empty, not silently regrow the default.
+	if out.is_empty() and not ProjectSettings.has_setting(ROOTS_KEY) \
+			and DirAccess.dir_exists_absolute(
+				ProjectSettings.globalize_path(DEFAULT_ROOT)):
 		out.append(DEFAULT_ROOT)
 	return out
 

@@ -131,10 +131,19 @@ static func size_m(aabb: AABB) -> Dictionary:
 ## ok=false and never throw — a mesh that will not load is the caller's count
 ## to keep, not this function's problem to solve.
 func render_one(src: String, out_path: String, res: int) -> Dictionary:
-	var packed: Resource = ResourceLoader.load(src)
-	if not packed is PackedScene:
+	var resource: Resource = ResourceLoader.load(src)
+	var scene: Node = null
+	if resource is PackedScene:
+		scene = (resource as PackedScene).instantiate()
+	elif resource is Mesh:
+		# A bare .obj (or any mesh format with no wrapper scene) imports as an
+		# ArrayMesh, not a PackedScene — give it the MeshInstance3D a wrapper
+		# would have provided so it renders like everything else.
+		var instance := MeshInstance3D.new()
+		instance.mesh = resource as Mesh
+		scene = instance
+	else:
 		return {"ok": false}
-	var scene: Node = (packed as PackedScene).instantiate()
 	if scene == null:
 		return {"ok": false}
 	_subject.add_child(scene)

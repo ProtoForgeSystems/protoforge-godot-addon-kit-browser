@@ -184,9 +184,9 @@ func set_tile_size(px: int) -> void:
 
 ## Scan the configured asset roots and render any thumbnails missing or stale.
 ## A failed mesh is recorded and the run carries on -- same rule as the
-## pipeline. Guarded behind Engine.is_editor_hint(): headless construction
-## must be able to build the dock without touching EditorInterface, and the
-## button that reaches this is only pressable inside a running editor anyway.
+## pipeline. No is_editor_hint() guard: nothing in this body touches
+## EditorInterface, and the button that reaches this is only pressable
+## inside a running editor anyway.
 func run_index(force: bool = false) -> void:
 	if _indexing:
 		return
@@ -197,6 +197,7 @@ func run_index(force: bool = false) -> void:
 	renderer.setup()
 	var failures := PackedStringArray()
 	var skipped_kits := PackedStringArray()
+	var write_failures := PackedStringArray()
 
 	for root in Settings.roots():
 		for kit in Indexer.find_kits(root):
@@ -225,7 +226,11 @@ func run_index(force: bool = false) -> void:
 				else:
 					failures.append("%s/%s" % [kit, entry["path"]])
 			if not entries.is_empty() or old != null:
-				Indexer.write_index(kit_dir, Indexer.build_doc(entries))
+				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(entries))
+				if write_err != OK:
+					push_warning("Kit Browser: could not write index.json for %s (%s)"
+						% [kit, write_err])
+					write_failures.append(kit)
 
 	renderer.queue_free()
 	_indexing = false
@@ -238,6 +243,8 @@ func run_index(force: bool = false) -> void:
 		note += " %d assets failed to render (see Output)." % failures.size()
 		for f in failures:
 			push_warning("Kit Browser: could not thumbnail %s" % f)
+	if not write_failures.is_empty():
+		note += " %d kit indexes failed to write (see Output)." % write_failures.size()
 	_status.text = note
 
 
