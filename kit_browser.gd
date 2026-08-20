@@ -266,6 +266,7 @@ func run_index(force: bool = false) -> void:
 				renderer.setup()
 			if not jobs.is_empty() and not _progress_popup.visible:
 				_progress_popup.popup_centered()
+			var dropped := []
 			for j in jobs.size():
 				var entry: Dictionary = entries[jobs[j]]
 				var note := "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
@@ -283,8 +284,14 @@ func run_index(force: bool = false) -> void:
 					"%s/%s" % [kit_dir, entry["path"]], out, Settings.resolution())
 				if result["ok"]:
 					entry["size_m"] = result["size_m"]
+				elif result.get("reason", "") == Thumbnailer.NO_GEOMETRY:
+					# Not a failure and not an asset: a file that loaded fine
+					# and has nothing to draw. Dropped below rather than here,
+					# because jobs indexes into entries.
+					dropped.append(jobs[j])
 				else:
 					failures.append("%s/%s" % [kit_label, entry["path"]])
+			entries = Indexer.prune(entries, dropped)
 			if not entries.is_empty() or old != null:
 				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(entries))
 				if write_err != OK:

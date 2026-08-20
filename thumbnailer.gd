@@ -5,6 +5,11 @@ extends Node
 ## Orthographic 3/4 view, key/fill/rim lights, AABB-fit framing — a 0.1 m
 ## handle and a 20 m bridge frame identically.
 
+## Why render_one failed. See its docstring: the caller reports one and
+## drops the other.
+const UNRENDERABLE := "unrenderable"
+const NO_GEOMETRY := "no_geometry"
+
 ## Front-left-above, converted from tools/blender_thumbnail.py's Blender-space
 ## (Z-up) camera direction via (x, y, z) -> (x, z, -y).
 const VIEW_DIR := Vector3(1.0, 0.8, 1.2)
@@ -130,6 +135,13 @@ static func size_m(aabb: AABB) -> Dictionary:
 ## Render one asset to one webp. Coroutine: awaits the draw. Failures return
 ## ok=false and never throw — a mesh that will not load is the caller's count
 ## to keep, not this function's problem to solve.
+##
+## A failure also carries "reason", because the two kinds are not the same
+## news. UNRENDERABLE is a broken asset and the caller should report it.
+## NO_GEOMETRY is a file that loaded perfectly and simply has nothing to
+## draw — an animation-only glTF is the case that matters — which makes it
+## not an asset at all, and the caller drops it from the index rather than
+## listing a tile that can never have a picture.
 func render_one(src: String, out_path: String, res: int) -> Dictionary:
 	var resource: Resource = ResourceLoader.load(src)
 	var scene: Node = null
@@ -143,15 +155,15 @@ func render_one(src: String, out_path: String, res: int) -> Dictionary:
 		instance.mesh = resource as Mesh
 		scene = instance
 	else:
-		return {"ok": false}
+		return {"ok": false, "reason": UNRENDERABLE}
 	if scene == null:
-		return {"ok": false}
+		return {"ok": false, "reason": UNRENDERABLE}
 	_subject.add_child(scene)
 
 	var aabb := scene_aabb(scene)
 	if not aabb.has_volume():
 		scene.queue_free()
-		return {"ok": false}
+		return {"ok": false, "reason": NO_GEOMETRY}
 
 	var frame := frame_for(aabb)
 	_camera.transform = Transform3D(frame["basis"], frame["position"])
@@ -169,4 +181,6 @@ func render_one(src: String, out_path: String, res: int) -> Dictionary:
 	var abs := ProjectSettings.globalize_path(out_path)
 	DirAccess.make_dir_recursive_absolute(abs.get_base_dir())
 	var err := image.save_webp(abs, true, 0.9)
-	return {"ok": err == OK, "size_m": size_m(aabb)}
+	if err != OK:
+		return {"ok": false, "reason": UNRENDERABLE}
+	return {"ok": true, "size_m": size_m(aabb)}

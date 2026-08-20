@@ -241,6 +241,29 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 	return {"entries": entries, "render": render}
 
 
+## Drop the entries a render proved are not assets. scan_kit gates .tscn
+## files on _has_3d_visuals, but a file with a mesh extension gets no such
+## check — an animation-only glTF passes the scan, renders to nothing, and
+## would otherwise sit in the dock forever as a tile with no picture. The
+## render is what knows, so the removal happens here rather than as a second
+## pre-pass that would pay the same load cost to learn the same fact.
+##
+## Families are recomputed because removing members can take a family below
+## MIN_FAMILY, and a clip's stem often matches the mesh it animates.
+static func prune(entries: Array, drop: Array) -> Array:
+	if drop.is_empty():
+		return entries
+	var dropped := {}
+	for i in drop:
+		dropped[int(i)] = true
+	var kept := []
+	for i in entries.size():
+		if not dropped.has(i):
+			kept.append(entries[i])
+	annotate_families(kept)
+	return kept
+
+
 static func build_doc(entries: Array) -> Dictionary:
 	return {
 		"schema": 2,

@@ -51,6 +51,11 @@ Each kit gets one `index.json`, written beside its assets, listing every
 mesh with its category, size, and module-bay metadata. Thumbnails render to a
 `thumbnails/` folder next to that index, one image per mesh.
 
+A file only earns an entry if it has something to draw. Scenes are checked
+before rendering and meshes by the render itself, so animation-only glTFs,
+tool scenes, and other geometry-less files are left out rather than listed as
+tiles that can never have a picture.
+
 Both `index.json` and `thumbnails/` are plain project files — safe to commit
 alongside the kit's own assets, so a teammate (or CI) never has to re-render
 anything just to browse the library.
