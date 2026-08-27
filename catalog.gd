@@ -327,7 +327,11 @@ static func family_members(assets: Array, family: String, kit: String) -> Array:
 	return out
 
 
-## One-line summary for the details pane and the item tooltip.
+## Summary for the details pane and the item tooltip: one line of taxonomy,
+## then the placeable's res:// path on its own line. The path is what tells
+## two same-named tiles apart — a kit shipping 1K and 2K tiers of the same
+## mesh legitimately lists both, and name/category/size are identical between
+## them.
 static func describe(asset: Dictionary) -> String:
 	var cat: String = asset.get("category", "")
 	var sub: String = asset.get("subcategory", "")
@@ -345,4 +349,6 @@ static func describe(asset: Dictionary) -> String:
 		bits.append("%d variants" % count)
 	if asset.get("needs_review", false):
 		bits.append("needs review")
-	return " — ".join(bits)
+	var line := " — ".join(bits)
+	var path := String(asset.get("path", asset.get("mesh_path", "")))
+	return line if path.is_empty() else "%s\n%s" % [line, path]
