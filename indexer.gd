@@ -209,8 +209,12 @@ static func can_overwrite(old_doc: Variant, force: bool) -> bool:
 	return force or old_doc.get("generator", "") == GENERATOR
 
 
+## `tiers` (Settings.variant_tiers()) names resolution-tier directories to
+## skip when deriving category/subcategory from the path — a tiered kit's
+## first component is "1K", and "1k" as a category is a tier masquerading as
+## taxonomy. The path itself always stays real; only the labels skip.
 static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
-		force: bool) -> Dictionary:
+		force: bool, tiers: PackedStringArray = PackedStringArray()) -> Dictionary:
 	var old := {}
 	if typeof(old_doc) == TYPE_DICTIONARY:
 		for a in old_doc.get("assets", []):
@@ -229,7 +233,10 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 				and existing.has(thumb):
 			entries.append(prior)
 			continue
-		var parts := rel.split("/")
+		var parts := PackedStringArray()
+		for part in rel.split("/"):
+			if not tiers.has(part):
+				parts.append(part)
 		render.append(entries.size())
 		entries.append({
 			"path": rel,

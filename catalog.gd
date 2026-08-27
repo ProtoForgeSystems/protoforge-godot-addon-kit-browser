@@ -272,6 +272,103 @@ static func collapse_families(assets: Array) -> Array:
 	return out
 
 
+## One entry per asset across resolution tiers, resolved to the wanted tier.
+##
+## `tiers` names the top-level directories that are texture-resolution tiers
+## of the same mesh (a pipeline convention, supplied by the caller from
+## Settings.variant_tiers() — never assumed). Two index styles feed this and
+## both must collapse the same way:
+##
+##   - a directory scan lists every tier as its own entry (…/1K/x.gltf and
+##     …/2K/x.gltf) — twins are grouped by their tier-stripped path and the
+##     wanted tier's entry survives;
+##   - a pipeline index lists each asset once under its base tier — nothing
+##     to group, but selecting the other tier retargets the entry by path
+##     substitution, gated on the substituted file actually existing so a
+##     kit shipping only one tier degrades to what it has.
+##
+## Assets whose paths pass through no tier directory pass through untouched.
+## Survivors carry "tier" (what they resolve to) and "tiers" (what exists in
+## the index) so the tooltip can say both.
+static func collapse_tiers(assets: Array, tiers: PackedStringArray,
+		wanted: String) -> Array:
+	if tiers.is_empty():
+		return assets
+	var groups := {}
+	var order := []
+	for a in assets:
+		var path := String(a.get("path", ""))
+		var tier := _tier_of(path, tiers)
+		if tier.is_empty():
+			order.append(a)
+			continue
+		var key := "%s\n%s" % [a.get("kit", ""), _swap_tier(path, tier, "")]
+		if not groups.has(key):
+			groups[key] = []
+			order.append(key)
+		groups[key].append(a)
+	var out := []
+	for item in order:
+		if item is Dictionary:
+			out.append(item)
+			continue
+		var twins: Array = groups[item]
+		var chosen: Dictionary = twins[0]
+		var available := PackedStringArray()
+		for t in twins:
+			var tier := _tier_of(String(t.get("path", "")), tiers)
+			available.append(tier)
+			if tier == wanted:
+				chosen = t
+		var entry: Dictionary = chosen.duplicate()
+		entry["tier"] = _tier_of(String(entry.get("path", "")), tiers)
+		entry["tiers"] = available
+		if entry["tier"] != wanted:
+			_retarget_tier(entry, String(entry["tier"]), wanted)
+		out.append(entry)
+	return out
+
+
+## The first path component that names a configured tier, or "".
+static func _tier_of(path: String, tiers: PackedStringArray) -> String:
+	for part in path.split("/"):
+		if tiers.has(part):
+			return part
+	return ""
+
+
+## The path with the tier component replaced ("" removes it, for grouping).
+static func _swap_tier(path: String, tier: String, replacement: String) -> String:
+	var parts := path.split("/")
+	var out := PackedStringArray()
+	var swapped := false
+	for part in parts:
+		if not swapped and part == tier:
+			swapped = true
+			if replacement.is_empty():
+				continue
+			out.append(replacement)
+			continue
+		out.append(part)
+	return "/".join(out)
+
+
+## Point an entry at the wanted tier when that file actually exists — a
+## pipeline index lists only its base tier, so the twin is found on disk
+## rather than in the index. The thumbnail is left alone: tiers render
+## identically at thumbnail size and only the base tier is guaranteed one.
+static func _retarget_tier(entry: Dictionary, from: String, wanted: String) -> void:
+	var path := _swap_tier(String(entry.get("path", "")), from, wanted)
+	if not FileAccess.file_exists(path):
+		return
+	entry["path"] = path
+	if entry.has("mesh_path"):
+		var mesh := _swap_tier(String(entry["mesh_path"]), from, wanted)
+		if FileAccess.file_exists(mesh):
+			entry["mesh_path"] = mesh
+	entry["tier"] = wanted
+
+
 ## A family identifies a group only within its own kit: the indexer derives
 ## families one kit at a time, and vendors reuse the same words -- SM_pipe occurs
 ## in twelve of the attached kits. Keying on the bare name showed one tile for all
@@ -349,6 +446,9 @@ static func describe(asset: Dictionary) -> String:
 		bits.append("%d variants" % count)
 	if asset.get("needs_review", false):
 		bits.append("needs review")
+	var tiers := PackedStringArray(asset.get("tiers", PackedStringArray()))
+	if tiers.size() > 1:
+		bits.append("tiers " + "/".join(tiers))
 	var line := " — ".join(bits)
 	var path := String(asset.get("path", asset.get("mesh_path", "")))
 	return line if path.is_empty() else "%s\n%s" % [line, path]

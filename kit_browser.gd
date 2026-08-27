@@ -29,6 +29,7 @@ var _search: LineEdit
 var _kit_pick: OptionButton
 var _cat_pick: OptionButton
 var _bay_pick: OptionButton
+var _tier_pick: OptionButton
 var _review_only: CheckBox
 var _group_variants: CheckBox
 var _list: ItemList
@@ -93,6 +94,20 @@ func _build_ui() -> void:
 	_group_variants.button_pressed = true
 	_group_variants.toggled.connect(func(_p: bool) -> void: _apply())
 	row2.add_child(_group_variants)
+
+	# Only visible when the project declares tier directories (a pipeline
+	# convention — see Settings.variant_tiers). One global switch, not a
+	# per-tile choice: tiers are texture resolutions of identical meshes, so
+	# "which tier am I placing" is a mode, and duplicate tiles per asset were
+	# exactly the noise this control replaces.
+	_tier_pick = OptionButton.new()
+	_tier_pick.fit_to_longest_item = false
+	_tier_pick.tooltip_text = "Which resolution tier tiles resolve to"
+	_tier_pick.item_selected.connect(func(i: int) -> void:
+		Settings.set_selected_tier(_tier_pick.get_item_text(i))
+		_apply())
+	row2.add_child(_tier_pick)
+	_refresh_tier_picker()
 
 	var settings_button := Button.new()
 	settings_button.text = "Settings…"
@@ -252,7 +267,8 @@ func run_index(force: bool = false) -> void:
 				continue
 			var scanned := Indexer.scan_kit(kit_dir)
 			var plan := Indexer.plan(scanned, old,
-				Indexer.existing_thumbs(kit_dir), force)
+				Indexer.existing_thumbs(kit_dir), force,
+				Settings.variant_tiers())
 			var entries: Array = plan["entries"]
 			var jobs: Array = plan["render"]
 			# Recomputed over kept and fresh entries together: an unchanged
@@ -332,6 +348,7 @@ func reload() -> void:
 	_fill_picker(_cat_pick, "All shelves", Catalog.shelves_of(_all))
 	_fill_picker(_bay_pick, "All bays", Catalog.bays_of(_all))
 	_refresh_review_visibility()
+	_refresh_tier_picker()
 	_apply()
 
 
@@ -374,11 +391,27 @@ func _picked(picker: OptionButton) -> String:
 	return "" if picker.selected <= 0 else picker.get_item_text(picker.selected)
 
 
+func _refresh_tier_picker() -> void:
+	var tiers := Settings.variant_tiers()
+	_tier_pick.visible = not tiers.is_empty()
+	_tier_pick.clear()
+	var chosen := Settings.selected_tier()
+	for i in tiers.size():
+		_tier_pick.add_item(tiers[i])
+		if tiers[i] == chosen:
+			_tier_pick.select(i)
+
+
 func _apply() -> void:
 	for picker in [_kit_pick, _cat_pick, _bay_pick]:
 		_retip(picker)
 	_filtered = Catalog.filter(_all, _search.text, _picked(_kit_pick),
 		_picked(_cat_pick), _review_only.button_pressed, _picked(_bay_pick))
+	# Tiers collapse before families: the family badge and the right-click
+	# variant menu are both built from _filtered, and either one counting an
+	# asset's 1K and 2K twins as two variants would be lying about the kit.
+	_filtered = Catalog.collapse_tiers(_filtered, Settings.variant_tiers(),
+		Settings.selected_tier())
 	_shown = (Catalog.collapse_families(_filtered)
 		if _group_variants.button_pressed else _filtered)
 	_populate()

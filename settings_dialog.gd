@@ -15,6 +15,7 @@ signal force_reindex_requested
 
 var _roots: ItemList
 var _resolution: SpinBox
+var _tiers: LineEdit
 ## Exposed so the dock can disable it while a run is in progress -- run_index
 ## stays owned by the dock, this dialog only signals the request.
 var index_button: Button
@@ -68,6 +69,22 @@ func _init() -> void:
 		func(v: float) -> void: Settings.set_resolution(int(v)))
 	res_row.add_child(_resolution)
 
+	var tier_row := HBoxContainer.new()
+	box.add_child(tier_row)
+	var tier_label := _label("Resolution tiers:")
+	tier_label.tooltip_text = ("Comma-separated directory names that are " +
+		"resolution tiers of the same asset (e.g. 1K, 2K). Leave empty " +
+		"unless your kits use that layout — tiered kits collapse to one " +
+		"tile with a tier switch in the dock.")
+	tier_row.add_child(tier_label)
+	_tiers = LineEdit.new()
+	_tiers.placeholder_text = "e.g. 1K, 2K"
+	_tiers.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tiers.tooltip_text = tier_label.tooltip_text
+	_tiers.text_submitted.connect(func(_t: String) -> void: _store_tiers())
+	_tiers.focus_exited.connect(_store_tiers)
+	tier_row.add_child(_tiers)
+
 	var force := Button.new()
 	force.text = "Force re-index (rebuild all indexes and thumbnails)"
 	force.pressed.connect(func() -> void:
@@ -89,6 +106,17 @@ func _refresh() -> void:
 	for root in Settings.roots():
 		_roots.add_item(root)
 	_resolution.set_value_no_signal(Settings.resolution())
+	_tiers.text = ", ".join(Settings.variant_tiers())
+
+
+func _store_tiers() -> void:
+	var out := PackedStringArray()
+	for part in _tiers.text.split(","):
+		var trimmed := part.strip_edges()
+		if not trimmed.is_empty() and not out.has(trimmed):
+			out.append(trimmed)
+	if out != Settings.variant_tiers():
+		Settings.set_variant_tiers(out)
 
 
 func _pick_root() -> void:
