@@ -231,6 +231,10 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 		if not force and typeof(prior) == TYPE_DICTIONARY \
 				and int(prior.get("mtime", -1)) == int(file["mtime"]) \
 				and existing.has(thumb):
+			# JSON.parse_string has no int type, so a kept entry's mtime came
+			# back as a float and would be re-written as "100.0" — flipping
+			# every index's format the first time the addon re-indexes it.
+			prior["mtime"] = int(prior.get("mtime", -1))
 			entries.append(prior)
 			continue
 		var parts := PackedStringArray()

@@ -176,7 +176,23 @@ func render_one(src: String, out_path: String, res: int) -> Dictionary:
 
 	await RenderingServer.frame_post_draw
 	var image := _viewport.get_texture().get_image()
+	# A scene with volume that captured as nothing did not draw — on a cold
+	# editor the material pipelines can still be compiling when the single
+	# UPDATE_ONCE frame runs, and the capture is then fully transparent while
+	# everything else about the render reports success. That wrote 414 blank
+	# webps in one run (and had already shipped blanks a week earlier), so a
+	# blank is retried for a few frames and then refused rather than saved:
+	# a blank file that exists reads as done forever, because the caller's
+	# thumb-exists skip never revisits it.
+	var retries := 0
+	while image.is_invisible() and retries < 8:
+		retries += 1
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		await RenderingServer.frame_post_draw
+		image = _viewport.get_texture().get_image()
 	scene.queue_free()
+	if image.is_invisible():
+		return {"ok": false, "reason": UNRENDERABLE}
 
 	var abs := ProjectSettings.globalize_path(out_path)
 	DirAccess.make_dir_recursive_absolute(abs.get_base_dir())
