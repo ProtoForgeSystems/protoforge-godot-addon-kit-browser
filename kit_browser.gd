@@ -17,6 +17,10 @@ const SettingsDialog := preload("res://addons/kit_browser/settings_dialog.gd")
 ## frame locks the editor, so a budget's worth are decoded per frame instead.
 const ICONS_PER_FRAME := 24
 
+## The dock's one "this will not work" colour, shared by the status line and
+## by a tile whose composite cannot be placed.
+const UNAVAILABLE_COLOR := Color(1.0, 0.55, 0.45)
+
 var _all: Array = []
 ## The filtered assets before variants were collapsed -- what a grouped tile
 ## stands for, and therefore what its right-click menu has to offer.
@@ -240,6 +244,7 @@ func run_index(force: bool = false) -> void:
 	var renderer: Node = null
 	var failures := PackedStringArray()
 	var skipped_kits := PackedStringArray()
+	var unmet := PackedStringArray()
 	var write_failures := PackedStringArray()
 	var kits_found := 0
 	# Overlapping roots (e.g. "res://assets" and "res://assets/CombatProps")
@@ -265,7 +270,7 @@ func run_index(force: bool = false) -> void:
 			if not Indexer.can_overwrite(old, force):
 				skipped_kits.append(kit_label)
 				continue
-			var scanned := Indexer.scan_kit(kit_dir)
+			var scanned := Indexer.scan_kit(kit_dir, Settings.roots())
 			var plan := Indexer.plan(scanned, old,
 				Indexer.existing_thumbs(kit_dir), force,
 				Settings.variant_tiers())
@@ -276,6 +281,10 @@ func run_index(force: bool = false) -> void:
 			# but a re-indexed sibling arriving alongside it can still change
 			# the family it belongs to.
 			Indexer.annotate_families(entries)
+			for entry in entries:
+				if entry.has("unmet_deps"):
+					unmet.append("%s/%s needs %s" % [kit_label, entry["path"],
+						", ".join(entry["unmet_deps"])])
 			if not jobs.is_empty() and renderer == null:
 				renderer = Thumbnailer.new()
 				add_child(renderer)
@@ -331,6 +340,14 @@ func run_index(force: bool = false) -> void:
 		note = "Indexed."
 		if not skipped_kits.is_empty():
 			note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
+		if not unmet.is_empty():
+			# Stated rather than silent: the composites are genuinely absent
+			# from the dock's renderable set, and a run that quietly drew
+			# fewer tiles than last time is the kind of thing people notice
+			# a week later and blame on the indexer.
+			note += " %d composites skipped for absent dependency kits." % unmet.size()
+			for u in unmet:
+				push_warning("Kit Browser: skipped composite %s" % u)
 		if not failures.is_empty():
 			note += " %d assets failed to render (see Output)." % failures.size()
 			for f in failures:
@@ -426,7 +443,15 @@ func _populate() -> void:
 		var siblings: int = asset.get("family_count", 0)
 		var idx := _list.add_item(_caption(asset.get("name", "?"), siblings))
 		_list.set_item_tooltip(idx, Catalog.describe(asset))
-		paths.append(asset.get("path", ""))
+		# Still listed, and still says what it is -- the composite exists and
+		# checking out its dependency kits makes it whole, so hiding it would
+		# turn a fixable gap into an invisible one. It just cannot be placed,
+		# and an empty path is what tells the drag payload the same thing.
+		if asset.has("unmet_deps"):
+			_list.set_item_custom_fg_color(idx, UNAVAILABLE_COLOR)
+			paths.append("")
+		else:
+			paths.append(asset.get("path", ""))
 
 		var thumb := Catalog.thumbnail_path(asset)
 		if thumb.is_empty():
@@ -598,12 +623,21 @@ func _on_variant_chosen(id: int) -> void:
 ##
 ## Reached by double-clicking a tile, or Enter on a selected one.
 func instantiate(asset: Dictionary) -> void:
+	var missing := PackedStringArray(asset.get("unmet_deps", PackedStringArray()))
+	if missing.size() > 0:
+		# Refused rather than placed half-built: loading it is what logs one
+		# "Failed loading resource" per absent prop, and the node that lands
+		# is a building missing its dressing with nothing on it saying so.
+		_status.text = "%s needs kits that are not checked out: %s" % [
+			asset.get("name", "?"), ", ".join(missing)]
+		_status.add_theme_color_override("font_color", UNAVAILABLE_COLOR)
+		return
 	var root := _edited_root()
 	if root == null:
 		# Loud, in the line the eye already goes to for counts. The old message
 		# went to the details label and was effectively invisible.
 		_status.text = "Nothing to place into — open a scene first."
-		_status.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+		_status.add_theme_color_override("font_color", UNAVAILABLE_COLOR)
 		return
 	var packed: PackedScene = load(asset.get("path", ""))
 	if packed == null:

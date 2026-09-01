@@ -7,6 +7,7 @@ extends RefCounted
 
 const Facets := preload("res://addons/kit_browser/facets.gd")
 const Settings := preload("res://addons/kit_browser/settings.gd")
+const Indexer := preload("res://addons/kit_browser/indexer.gd")
 
 const KITS_DIR := "res://Assets/Kits"
 const VARIANT := "1K"
@@ -64,6 +65,16 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 					entry["path"] = entry["mesh_path"]
 					entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
 						rel.get_basename(), THUMB_EXT]
+					# Recomputed here rather than trusted from the index: the
+					# index states which kits the composite NEEDS, which is a
+					# fact about the asset, while whether they are checked out
+					# is a fact about this machine. A pipeline-written index
+					# (richer than anything the addon rebuilds, and therefore
+					# never overwritten without force) carries the first and
+					# cannot know the second.
+					var missing := Indexer.unmet_deps(asset.get("dep_kits", []), kit_roots)
+					if not missing.is_empty():
+						entry["unmet_deps"] = missing
 					assets.append(entry)
 					continue
 				# The mesh path stays, because the thumbnail is keyed off it and
@@ -446,6 +457,9 @@ static func describe(asset: Dictionary) -> String:
 		bits.append("%d variants" % count)
 	if asset.get("needs_review", false):
 		bits.append("needs review")
+	var missing := PackedStringArray(asset.get("unmet_deps", PackedStringArray()))
+	if missing.size() > 0:
+		bits.append("missing kits: " + ", ".join(missing))
 	var tiers := PackedStringArray(asset.get("tiers", PackedStringArray()))
 	if tiers.size() > 1:
 		bits.append("tiers " + "/".join(tiers))

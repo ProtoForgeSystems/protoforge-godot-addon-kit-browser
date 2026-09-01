@@ -10,6 +10,11 @@ const THUMB_DIR := "thumbnails"
 const THUMB_EXT := ".webp"
 const MIN_FAMILY := 2
 
+## Where a kit declares, per composite scene, which OTHER kits that scene
+## instances props from. Written by the pipeline's composite generator and
+## shipped inside the kit; absent from every kit that has no composites.
+const COMPOSITE_MANIFEST := "Composites/composites.json"
+
 ## Mirrors catalog/variants.py's _MARKER and _DIMENSION exactly -- the addon
 ## indexer and the pipeline must agree on what a variant marker is, or the
 ## same kit groups differently depending on which one indexed it. Compiled
@@ -115,7 +120,71 @@ static func _has_mesh_file(dir: DirAccess) -> bool:
 	return false
 
 
-static func scan_kit(kit_dir: String) -> Array:
+## Each composite scene's declared dep_kits, keyed by the kit-root-relative
+## .tscn path ("Composites/PF_House_04.tscn") so a scan can look one up by
+## the path it already has. Empty for a kit with no manifest.
+##
+## A composite is authored against a whole asset bundle: PF_House_04 instances
+## its walls from its own kit but its candles from Hivemind/ModularDungeon and
+## a barrel from Hivemind/BanditVillage. Check out one kit of that bundle and
+## the .tscn still ships -- loading it then logs one "Failed loading resource"
+## per absent prop and draws a building stripped of its dressing. The kit
+## already ships the answer to "would this load"; nothing read it.
+static func composite_deps(kit_dir: String) -> Dictionary:
+	var path := "%s/%s" % [kit_dir, COMPOSITE_MANIFEST]
+	if not FileAccess.file_exists(path):
+		return {}
+	var doc: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if typeof(doc) != TYPE_DICTIONARY:
+		return {}
+	var out := {}
+	for entry in doc.get("composites", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var rel := String(entry.get("tscn", ""))
+		if not rel.is_empty():
+			out[rel] = PackedStringArray(entry.get("dep_kits", []))
+	return out
+
+
+## Which of `dep_kits` is not checked out under any of `roots`, in declared
+## order. A dep_kit is named the way find_kits names a kit --
+## "Hivemind/ModularDungeon" -- so the two are directly comparable.
+static func unmet_deps(dep_kits: Variant, roots: PackedStringArray) -> PackedStringArray:
+	var out := PackedStringArray()
+	if typeof(dep_kits) != TYPE_ARRAY and typeof(dep_kits) != TYPE_PACKED_STRING_ARRAY:
+		return out
+	for dep in dep_kits:
+		var name := String(dep)
+		if name.is_empty():
+			continue
+		var present := false
+		for root in roots:
+			if _kit_present("%s/%s" % [root.rstrip("/"), name]):
+				present = true
+				break
+		if not present:
+			out.append(name)
+	return out
+
+
+## Presence is "the directory exists and holds something", not "it has an
+## index.json": an exported-but-unindexed kit's meshes still load, and loading
+## is all a composite needs from it. Emptiness rather than existence is the
+## test because an un-initialised git submodule -- far and away the common way
+## a dep kit goes missing -- leaves the directory behind.
+static func _kit_present(dir_path: String) -> bool:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return false
+	return not (dir.get_files().is_empty() and dir.get_directories().is_empty())
+
+
+## `roots` is the configured kit roots, used only to resolve the composite
+## dep_kits described on composite_deps. Passing none disables that check
+## rather than declaring every dep unmet: with nowhere to look, "missing" is
+## not a fact this can establish.
+static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArray()) -> Array:
 	var files := []
 	_scan_dir(kit_dir, "", files)
 	# A .tscn sitting beside a mesh of the same stem is that mesh's wrapper:
@@ -125,11 +194,21 @@ static func scan_kit(kit_dir: String) -> Array:
 	for f in files:
 		if String(f["path"]).get_extension() != "tscn":
 			mesh_stems[String(f["path"]).get_basename()] = true
+	var deps := composite_deps(kit_dir) if not roots.is_empty() else {}
 	var out := []
 	for f in files:
 		var path := String(f["path"])
 		if path.get_extension() == "tscn":
 			if mesh_stems.has(path.get_basename()):
+				continue
+			# Checked before _has_3d_visuals, which instantiates the scene and
+			# is therefore itself one of the two places the missing-prop errors
+			# came from. A manifest entry already says this is a 3D composite,
+			# so the gate the load would have provided is not needed here.
+			var missing := unmet_deps(deps.get(path, []), roots)
+			if not missing.is_empty():
+				f["unmet_deps"] = missing
+				out.append(f)
 				continue
 			if not _has_3d_visuals("%s/%s" % [kit_dir, path]):
 				continue
@@ -241,14 +320,22 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 		for part in rel.split("/"):
 			if not tiers.has(part):
 				parts.append(part)
-		render.append(entries.size())
-		entries.append({
+		var entry := {
 			"path": rel,
 			"name": file["name"],
 			"mtime": file["mtime"],
 			"category": parts[0].to_lower() if parts.size() > 1 else "",
 			"subcategory": parts[1].to_lower() if parts.size() > 2 else "",
-		})
+		}
+		# Indexed, but never rendered: the thumbnail is the second place the
+		# scene gets loaded, and a composite drawn without the props it is
+		# missing is a picture that lies about the asset. The entry carries the
+		# reason so the dock can say so instead of showing an empty tile.
+		if file.has("unmet_deps"):
+			entry["unmet_deps"] = file["unmet_deps"]
+		else:
+			render.append(entries.size())
+		entries.append(entry)
 	return {"entries": entries, "render": render}
 
 
