@@ -16,9 +16,13 @@ func _get_drag_data(_at_position: Vector2) -> Variant:
 	if selected.is_empty():
 		return null
 
+	# An empty path is the dock's marker for a tile that exists but cannot be
+	# placed -- a composite whose dependency kits are not checked out. Dropping
+	# it on the viewport would load it anyway, which is the whole thing being
+	# avoided, so it is dropped from the payload instead.
 	var files := PackedStringArray()
 	for i in selected:
-		if i < mesh_paths.size():
+		if i < mesh_paths.size() and not mesh_paths[i].is_empty():
 			files.append(mesh_paths[i])
 	if files.is_empty():
 		return null
