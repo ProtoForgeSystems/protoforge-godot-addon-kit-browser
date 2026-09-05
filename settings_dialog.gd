@@ -25,11 +25,16 @@ var _tiers: LineEdit
 ## stays owned by the dock, this dialog only signals the request.
 var index_button: Button
 
-## True once _refresh has filled the fields from Settings. Guards the close
-## handler: before the first popup the tiers field is empty because nothing
-## has been loaded into it yet, not because the user cleared it, and storing
-## that would wipe the project's configured tiers.
-var _populated := false
+## Also owned by the dock while a run is in flight, for the same reason.
+var force_button: Button
+
+## Settings as they stood when the dialog opened. Empty until the first popup,
+## which guards the close handler: before then the tiers field is empty
+## because nothing was loaded into it, not because the user cleared it, and
+## storing that would wipe the project's configured tiers. Compared on close,
+## so a dialog that was opened and shut with nothing touched -- most closes --
+## costs the dock nothing.
+var _opened_with := {}
 ## Set while the dialog closes to hand a run to the dock, which reloads at the
 ## end of that run anyway. Without it every Index press pays for two full
 ## passes over every index.json.
@@ -100,14 +105,14 @@ func _init() -> void:
 	_tiers.focus_exited.connect(_store_tiers)
 	tier_row.add_child(_tiers)
 
-	var force := Button.new()
-	force.text = "Force re-index (rebuild all indexes and thumbnails)"
-	force.pressed.connect(func() -> void:
+	force_button = Button.new()
+	force_button.text = "Force re-index (rebuild all indexes and thumbnails)"
+	force_button.pressed.connect(func() -> void:
 		_close_for_run()
 		force_reindex_requested.emit())
-	box.add_child(force)
+	box.add_child(force_button)
 
-	about_to_popup.connect(_refresh)
+	about_to_popup.connect(_on_about_to_popup)
 	# Every way out of this dialog -- OK, the window's close button, Escape --
 	# ends in a hide, so that is the one place worth listening to. focus_exited
 	# already stores the tiers field in the common case, but not when the field
@@ -122,11 +127,26 @@ func _close_for_run() -> void:
 	_handing_off = false
 
 
+func _on_about_to_popup() -> void:
+	_refresh()
+	_opened_with = _current()
+
+
 func _on_visibility_changed() -> void:
-	if visible or _handing_off or not _populated:
+	if visible or _handing_off or _opened_with.is_empty():
 		return
 	_store_tiers()
-	settings_changed.emit()
+	if _current() != _opened_with:
+		settings_changed.emit()
+
+
+## Everything the dock reads back from Settings on a reload.
+func _current() -> Dictionary:
+	return {
+		"roots": Settings.roots(),
+		"resolution": Settings.resolution(),
+		"tiers": Settings.variant_tiers(),
+	}
 
 
 func _label(text: String) -> Label:
@@ -141,7 +161,6 @@ func _refresh() -> void:
 		_roots.add_item(root)
 	_resolution.set_value_no_signal(Settings.resolution())
 	_tiers.text = ", ".join(Settings.variant_tiers())
-	_populated = true
 
 
 func _store_tiers() -> void:

@@ -410,6 +410,44 @@ static func prune(entries: Array, drop: Array) -> Array:
 	return kept
 
 
+## What a run that was cancelled part-way through this kit can still write.
+## `jobs[:done]` were rendered (some of them into `dropped`); `jobs[done:]`
+## were not reached and take their OLD entry where the old index has one, so
+## the next plain Index finds a stale mtime or a missing thumbnail and renders
+## them then. Everything not in `jobs` was kept from the old index and stays.
+## Returns null when the old index is not the addon's to overwrite: a partial
+## addon doc replacing a pipeline index would take the classifier's work with
+## it, and that kit is left exactly as it was instead.
+static func salvage(entries: Array, jobs: Array, done: int, dropped: Array,
+		old_doc: Variant) -> Variant:
+	if not can_overwrite(old_doc, false):
+		return null
+	var old := {}
+	if typeof(old_doc) == TYPE_DICTIONARY:
+		for a in old_doc.get("assets", []):
+			old[a.get("path", "")] = a
+	var skip := {}
+	for i in dropped:
+		skip[int(i)] = true
+	var unreached := {}
+	for j in range(done, jobs.size()):
+		unreached[int(jobs[j])] = true
+	var out := []
+	for i in entries.size():
+		if skip.has(i):
+			continue
+		if unreached.has(i):
+			var prior: Variant = old.get(entries[i].get("path", ""))
+			if typeof(prior) != TYPE_DICTIONARY:
+				continue
+			prior["mtime"] = int(prior.get("mtime", -1))
+			out.append(prior)
+			continue
+		out.append(entries[i])
+	annotate_families(out)
+	return out
+
+
 static func build_doc(entries: Array) -> Dictionary:
 	return {
 		"schema": 2,

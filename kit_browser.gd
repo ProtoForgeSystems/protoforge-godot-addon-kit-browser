@@ -249,10 +249,7 @@ func set_tile_size(px: int) -> void:
 func run_index(force: bool = false) -> void:
 	if _indexing:
 		return
-	_indexing = true
-	_cancel_requested = false
-	_cancel_button.disabled = false
-	_index_button.disabled = true
+	_set_running(true)
 	# The renderer is only spawned once there is an actual render job: a
 	# no-op run (nothing new, or zero kits found) used to still stand up a
 	# SubViewport for nothing and log a spurious "scenario is null" error in
@@ -268,8 +265,10 @@ func run_index(force: bool = false) -> void:
 	# resolve the same kit directory from two different roots; indexed once
 	# under either root, not once per root it is reachable from.
 	var indexed_dirs := {}
+	var roots := Settings.roots()
+	var tiers := Settings.variant_tiers()
 
-	for root in Settings.roots():
+	for root in roots:
 		for kit in Indexer.find_kits(root):
 			# "." means the root itself is the kit; every other kit name nests
 			# under root. No path ever gets an "/." segment appended.
@@ -287,10 +286,9 @@ func run_index(force: bool = false) -> void:
 			if not Indexer.can_overwrite(old, force):
 				skipped_kits.append(kit_label)
 				continue
-			var scanned := Indexer.scan_kit(kit_dir, Settings.roots())
+			var scanned := Indexer.scan_kit(kit_dir, roots)
 			var plan := Indexer.plan(scanned, old,
-				Indexer.existing_thumbs(kit_dir), force,
-				Settings.variant_tiers())
+				Indexer.existing_thumbs(kit_dir), force, tiers)
 			var entries: Array = plan["entries"]
 			var jobs: Array = plan["render"]
 			# Recomputed over kept and fresh entries together: an unchanged
@@ -298,10 +296,6 @@ func run_index(force: bool = false) -> void:
 			# but a re-indexed sibling arriving alongside it can still change
 			# the family it belongs to.
 			Indexer.annotate_families(entries)
-			for entry in entries:
-				if entry.has("unmet_deps"):
-					unmet.append("%s/%s needs %s" % [kit_label, entry["path"],
-						", ".join(entry["unmet_deps"])])
 			if not jobs.is_empty() and renderer == null:
 				renderer = Thumbnailer.new()
 				add_child(renderer)
@@ -309,6 +303,7 @@ func run_index(force: bool = false) -> void:
 			if not jobs.is_empty() and not _progress_popup.visible:
 				_progress_popup.popup_centered()
 			var dropped := []
+			var done := 0
 			for j in jobs.size():
 				if _cancel_requested:
 					break
@@ -326,6 +321,7 @@ func run_index(force: bool = false) -> void:
 					String(entry["path"]).get_basename(), Indexer.THUMB_EXT]
 				var result: Dictionary = await renderer.render_one(
 					"%s/%s" % [kit_dir, entry["path"]], out, Settings.resolution())
+				done += 1
 				if result["ok"]:
 					entry["size_m"] = result["size_m"]
 				elif result.get("reason", "") == Thumbnailer.NO_GEOMETRY:
@@ -335,22 +331,36 @@ func run_index(force: bool = false) -> void:
 					dropped.append(jobs[j])
 				else:
 					failures.append("%s/%s" % [kit_label, entry["path"]])
-			# Cancelled part-way through this kit: leave its index exactly as it
-			# was. Every thumbnail rendered before the cancel is still on disk
-			# and a later plain Index reuses it, so the work is not thrown
-			# away -- but writing a truncated index here would drop the assets
-			# that were never reached, and over a pipeline-generated index it
-			# would take the classifier's work with them.
-			if _cancel_requested:
-				break
-			entries = Indexer.prune(entries, dropped)
-			if not entries.is_empty() or old != null:
-				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(entries))
+			# A cancel that landed while this kit's last thumbnail was drawing
+			# is not an abort: the kit finished, and its index is written like
+			# any other. Only a kit with renders still owed is salvaged --
+			# rendered entries kept, unreached ones carried over from the old
+			# index -- and a pipeline index is left exactly as it was, since a
+			# partial addon doc would take the classifier's work with it.
+			var aborted := done < jobs.size()
+			var to_write: Variant = entries
+			if aborted:
+				to_write = Indexer.salvage(entries, jobs, done, dropped, old)
+			else:
+				to_write = Indexer.prune(entries, dropped)
+			if to_write != null and (not to_write.is_empty() or old != null):
+				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(to_write))
 				if write_err != OK:
 					push_warning("Kit Browser: could not write index.json for %s (%s)"
 						% [kit_label, write_err])
 					write_failures.append(kit_label)
-			kits_done += 1
+				elif not aborted:
+					kits_done += 1
+			# Reported for what was actually written: a composite held back
+			# from a kit whose index never landed is not something the dock
+			# will be missing.
+			if to_write != null:
+				for f in scanned:
+					if f.has("unmet_deps"):
+						unmet.append("%s/%s needs %s" % [kit_label, f["path"],
+							", ".join(f["unmet_deps"])])
+			if _cancel_requested:
+				break
 		if _cancel_requested:
 			break
 
@@ -359,15 +369,14 @@ func run_index(force: bool = false) -> void:
 	# Unconditional: covers the zero-kits and all-skipped paths too, where
 	# the popup was never shown, as well as the ordinary case where it was.
 	_progress_popup.hide()
-	_indexing = false
-	_index_button.disabled = false
+	_set_running(false)
 	reload()
 	var note: String
 	if _cancel_requested:
-		# Whole kits finished before the cancel keep their new indexes; the one
-		# in flight kept its old one. Index again to carry on from there.
-		note = ("Indexing cancelled — %d kits finished. Index again to continue."
-			% kits_done)
+		# Whole kits finished before the cancel keep their new indexes; the
+		# one in flight keeps what it rendered. Index again to carry on.
+		note = ("Indexing cancelled — %d kits finished, rendered thumbnails kept. "
+			+ "Index again to continue.") % kits_done
 	elif kits_found == 0:
 		note = ("No kits found under the configured roots — each root's " +
 			"subfolders are kits, or the root itself if it holds meshes.")
@@ -395,6 +404,20 @@ func run_index(force: bool = false) -> void:
 	_status.text = note
 
 
+## One switch for everything that must agree on whether a run is in flight.
+## Both ways of starting a run lock together: Index was disabled during a run
+## but Force re-index was not, and a Force press mid-run handed off to a
+## run_index that returned at once -- no run, and no reload either, because
+## the hand-off had suppressed the dialog's own.
+func _set_running(running: bool) -> void:
+	_indexing = running
+	_index_button.disabled = running
+	_settings_dialog.force_button.disabled = running
+	_cancel_button.disabled = not running
+	if running:
+		_cancel_requested = false
+
+
 ## Ask a running index to stop after the thumbnail it is drawing now.
 ##
 ## Not a kill: render_one is mid-await on the SubViewport, and tearing that
@@ -409,7 +432,13 @@ func cancel_index() -> void:
 
 
 ## Re-read the index from disk and rebuild the facet dropdowns.
+##
+## Refused mid-run: the indexes are being rewritten under it, and the count
+## it would put in the status line overwrites the progress note. The run ends
+## with a reload of its own, which carries any settings change made meanwhile.
 func reload() -> void:
+	if _indexing:
+		return
 	_all = Catalog.load_assets()
 	_icon_cache.clear()
 	_fill_picker(_kit_pick, "All kits", Catalog.kits_of(_all))
