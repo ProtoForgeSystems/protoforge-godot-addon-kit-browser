@@ -33,6 +33,9 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 	# can resolve the same kit directory twice -- once as a subdir kit of one
 	# root, once as "." of the other -- and would otherwise double-load it.
 	var seen_dirs := {}
+	# One presence answer per dep directory per load: every composite in a
+	# kit names the same two or three kits.
+	var present := {}
 	for root in kit_roots:
 		for kit in find_kits(root):
 			# "." means the root itself is the kit (a flat folder of meshes with
@@ -77,7 +80,7 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 						else entry["mesh_path"]
 				entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
 					rel.get_basename(), THUMB_EXT]
-				_mark_unmet(entry, kit_roots)
+				_mark_unmet(entry, kit_roots, present)
 				assets.append(entry)
 	assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if a["kit"] != b["kit"]:
@@ -99,11 +102,12 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 ## An unplaceable composite also leaves its variant family: a family tile
 ## shows one member and stands for the rest, and a red tile hiding placeable
 ## siblings (or a normal one hiding a dead sibling) lies about them either way.
-static func _mark_unmet(entry: Dictionary, kit_roots: PackedStringArray) -> void:
+static func _mark_unmet(entry: Dictionary, kit_roots: PackedStringArray,
+		present: Dictionary) -> void:
 	entry.erase("unmet_deps")
 	if not entry.has("dep_kits"):
 		return
-	var missing := Indexer.unmet_deps(entry["dep_kits"], kit_roots)
+	var missing := Indexer.unmet_deps(entry["dep_kits"], kit_roots, present)
 	if missing.is_empty():
 		return
 	entry["unmet_deps"] = missing

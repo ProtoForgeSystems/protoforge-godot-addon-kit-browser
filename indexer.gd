@@ -148,9 +148,14 @@ static func composite_deps(kit_dir: String) -> Dictionary:
 
 
 ## Which of `dep_kits` is not checked out under any of `roots`, in declared
-## order. A dep_kit is named the way find_kits names a kit --
-## "Hivemind/ModularDungeon" -- so the two are directly comparable.
-static func unmet_deps(dep_kits: Variant, roots: PackedStringArray) -> PackedStringArray:
+## order. A dep_kit is named from the pipeline's kits directory the way
+## find_kits names a kit -- "Hivemind/ModularDungeon" -- but a configured root
+## may sit at that level, at the vendor, or at the kit itself (find_kits
+## accepts all three), so each root is tried in whichever of those roles its
+## own path allows. `cache` maps a probed directory to its presence; pass one
+## dictionary across many calls and each directory is probed once.
+static func unmet_deps(dep_kits: Variant, roots: PackedStringArray,
+		cache: Dictionary = {}) -> PackedStringArray:
 	var out := PackedStringArray()
 	if typeof(dep_kits) != TYPE_ARRAY and typeof(dep_kits) != TYPE_PACKED_STRING_ARRAY:
 		return out
@@ -160,11 +165,31 @@ static func unmet_deps(dep_kits: Variant, roots: PackedStringArray) -> PackedStr
 			continue
 		var present := false
 		for root in roots:
-			if _kit_present("%s/%s" % [root.rstrip("/"), name]):
-				present = true
+			for candidate in _dep_candidates(root, name):
+				if not cache.has(candidate):
+					cache[candidate] = _kit_present(candidate)
+				if cache[candidate]:
+					present = true
+					break
+			if present:
 				break
 		if not present:
 			out.append(name)
+	return out
+
+
+## Where `name` would live if `root` were the kits directory, the dep's
+## vendor directory, or the dep kit itself. A root only qualifies for the
+## latter two when its path actually ends in the vendor or the kit, so a
+## same-named kit under another vendor never stands in for the dep.
+static func _dep_candidates(root: String, name: String) -> PackedStringArray:
+	var base := root.rstrip("/")
+	var out := PackedStringArray(["%s/%s" % [base, name]])
+	if base.ends_with("/" + name):
+		out.append(base)
+	var vendor := name.get_base_dir()
+	if not vendor.is_empty() and base.ends_with("/" + vendor):
+		out.append("%s/%s" % [base, name.get_file()])
 	return out
 
 
@@ -172,12 +197,16 @@ static func unmet_deps(dep_kits: Variant, roots: PackedStringArray) -> PackedStr
 ## index.json": an exported-but-unindexed kit's meshes still load, and loading
 ## is all a composite needs from it. Emptiness rather than existence is the
 ## test because an un-initialised git submodule -- far and away the common way
-## a dep kit goes missing -- leaves the directory behind.
+## a dep kit goes missing -- leaves the directory behind. One entry is read,
+## not the listing: a kit directory can hold thousands of files.
 static func _kit_present(dir_path: String) -> bool:
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
 		return false
-	return not (dir.get_files().is_empty() and dir.get_directories().is_empty())
+	dir.list_dir_begin()
+	var first := dir.get_next()
+	dir.list_dir_end()
+	return not first.is_empty()
 
 
 ## `roots` is the configured kit roots, used only to resolve the composite
@@ -195,6 +224,7 @@ static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArr
 		if String(f["path"]).get_extension() != "tscn":
 			mesh_stems[String(f["path"]).get_basename()] = true
 	var deps := composite_deps(kit_dir)
+	var present := {}
 	var out := []
 	for f in files:
 		var path := String(f["path"])
@@ -212,7 +242,7 @@ static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArr
 				# prop errors came from. A manifest entry already says this is
 				# a 3D composite, so the gate the load would have provided is
 				# not needed here.
-				var missing := unmet_deps(deps[path], roots) \
+				var missing := unmet_deps(deps[path], roots, present) \
 					if not roots.is_empty() else PackedStringArray()
 				if not missing.is_empty():
 					f["unmet_deps"] = missing
