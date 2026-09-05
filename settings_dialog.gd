@@ -1,7 +1,8 @@
 @tool
 extends AcceptDialog
 ## Roots, thumbnail resolution, Index, and the force re-index escape hatch.
-## The dialog edits Settings directly; the dock re-reads on close.
+## The dialog edits Settings directly and emits settings_changed on close,
+## which is what makes the dock re-read them.
 
 const Settings := preload("res://addons/kit_browser/settings.gd")
 
@@ -12,6 +13,10 @@ const Settings := preload("res://addons/kit_browser/settings.gd")
 ## for it was redundant.
 signal index_requested
 signal force_reindex_requested
+## The dialog closed and something behind it may now be stale. Tiers are the
+## visible case: they gate a dock control that stays hidden until someone
+## re-reads the setting.
+signal settings_changed
 
 var _roots: ItemList
 var _resolution: SpinBox
@@ -19,6 +24,16 @@ var _tiers: LineEdit
 ## Exposed so the dock can disable it while a run is in progress -- run_index
 ## stays owned by the dock, this dialog only signals the request.
 var index_button: Button
+
+## True once _refresh has filled the fields from Settings. Guards the close
+## handler: before the first popup the tiers field is empty because nothing
+## has been loaded into it yet, not because the user cleared it, and storing
+## that would wipe the project's configured tiers.
+var _populated := false
+## Set while the dialog closes to hand a run to the dock, which reloads at the
+## end of that run anyway. Without it every Index press pays for two full
+## passes over every index.json.
+var _handing_off := false
 
 
 func _init() -> void:
@@ -54,7 +69,7 @@ func _init() -> void:
 	index_button.text = "Index"
 	index_button.tooltip_text = "Scan the asset roots and render missing thumbnails"
 	index_button.pressed.connect(func() -> void:
-		hide()
+		_close_for_run()
 		index_requested.emit())
 	row.add_child(index_button)
 
@@ -88,11 +103,30 @@ func _init() -> void:
 	var force := Button.new()
 	force.text = "Force re-index (rebuild all indexes and thumbnails)"
 	force.pressed.connect(func() -> void:
-		hide()
+		_close_for_run()
 		force_reindex_requested.emit())
 	box.add_child(force)
 
 	about_to_popup.connect(_refresh)
+	# Every way out of this dialog -- OK, the window's close button, Escape --
+	# ends in a hide, so that is the one place worth listening to. focus_exited
+	# already stores the tiers field in the common case, but not when the field
+	# still holds focus as the dialog goes away.
+	visibility_changed.connect(_on_visibility_changed)
+
+
+func _close_for_run() -> void:
+	_store_tiers()
+	_handing_off = true
+	hide()
+	_handing_off = false
+
+
+func _on_visibility_changed() -> void:
+	if visible or _handing_off or not _populated:
+		return
+	_store_tiers()
+	settings_changed.emit()
 
 
 func _label(text: String) -> Label:
@@ -107,6 +141,7 @@ func _refresh() -> void:
 		_roots.add_item(root)
 	_resolution.set_value_no_signal(Settings.resolution())
 	_tiers.text = ", ".join(Settings.variant_tiers())
+	_populated = true
 
 
 func _store_tiers() -> void:

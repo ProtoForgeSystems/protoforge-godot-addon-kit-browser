@@ -50,15 +50,19 @@ var _indexing := false
 ## Godot 4.7 has no scriptable editor-progress API (EditorProgress is a C++-
 ## only class; EditorPlugin/EditorInterface expose no progress_add_task in
 ## GDScript), so this is a small popup of our own rather than a wrapper
-## around one. A PopupPanel, not an AcceptDialog: there is no OK/close
-## button to keep out of the way in the first place, and a run must not be
-## dismissable mid-flight. If the user closes it anyway (Escape, or a
-## platform window-manager control), the index run itself does not read its
-## visibility and carries on regardless -- the popup is a status window, not
-## a gate.
+## around one. A PopupPanel, not an AcceptDialog: there is no OK to keep out
+## of the way, and Cancel is the only button because dismissing the window is
+## not the same act as stopping the run. If the popup is closed some other way
+## (Escape, a window-manager control) the run carries on regardless -- the
+## popup is a status window, not a gate, and stopping is an explicit request.
 var _progress_popup: PopupPanel
 var _progress_label: Label
 var _progress_bar: ProgressBar
+var _cancel_button: Button
+## Set by Cancel, read between renders. An index run over a library this size
+## is an hour of work, and until this existed the only way out of one was to
+## close the editor.
+var _cancel_requested := false
 
 
 func _ready() -> void:
@@ -155,6 +159,11 @@ func _build_ui() -> void:
 	_settings_dialog = SettingsDialog.new()
 	_settings_dialog.force_reindex_requested.connect(func() -> void: run_index(true))
 	_settings_dialog.index_requested.connect(func() -> void: run_index(false))
+	# Settings only reach the dock when something re-reads them. Adding
+	# resolution tiers used to leave the tier switch hidden until the editor
+	# was restarted or the addon toggled off and on, because nothing between
+	# the dialog and the dock ever looked again.
+	_settings_dialog.settings_changed.connect(reload)
 	add_child(_settings_dialog)
 	_index_button = _settings_dialog.index_button
 
@@ -174,6 +183,11 @@ func _build_ui() -> void:
 	_progress_bar = ProgressBar.new()
 	_progress_bar.show_percentage = false
 	progress_box.add_child(_progress_bar)
+	_cancel_button = Button.new()
+	_cancel_button.text = "Cancel"
+	_cancel_button.tooltip_text = "Stop after the thumbnail being rendered now"
+	_cancel_button.pressed.connect(cancel_index)
+	progress_box.add_child(_cancel_button)
 	add_child(_progress_popup)
 
 	_status = Label.new()
@@ -236,6 +250,8 @@ func run_index(force: bool = false) -> void:
 	if _indexing:
 		return
 	_indexing = true
+	_cancel_requested = false
+	_cancel_button.disabled = false
 	_index_button.disabled = true
 	# The renderer is only spawned once there is an actual render job: a
 	# no-op run (nothing new, or zero kits found) used to still stand up a
@@ -247,6 +263,7 @@ func run_index(force: bool = false) -> void:
 	var unmet := PackedStringArray()
 	var write_failures := PackedStringArray()
 	var kits_found := 0
+	var kits_done := 0
 	# Overlapping roots (e.g. "res://assets" and "res://assets/CombatProps")
 	# resolve the same kit directory from two different roots; indexed once
 	# under either root, not once per root it is reachable from.
@@ -293,6 +310,8 @@ func run_index(force: bool = false) -> void:
 				_progress_popup.popup_centered()
 			var dropped := []
 			for j in jobs.size():
+				if _cancel_requested:
+					break
 				var entry: Dictionary = entries[jobs[j]]
 				var note := "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
 				_status.text = note
@@ -316,6 +335,14 @@ func run_index(force: bool = false) -> void:
 					dropped.append(jobs[j])
 				else:
 					failures.append("%s/%s" % [kit_label, entry["path"]])
+			# Cancelled part-way through this kit: leave its index exactly as it
+			# was. Every thumbnail rendered before the cancel is still on disk
+			# and a later plain Index reuses it, so the work is not thrown
+			# away -- but writing a truncated index here would drop the assets
+			# that were never reached, and over a pipeline-generated index it
+			# would take the classifier's work with them.
+			if _cancel_requested:
+				break
 			entries = Indexer.prune(entries, dropped)
 			if not entries.is_empty() or old != null:
 				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(entries))
@@ -323,6 +350,9 @@ func run_index(force: bool = false) -> void:
 					push_warning("Kit Browser: could not write index.json for %s (%s)"
 						% [kit_label, write_err])
 					write_failures.append(kit_label)
+			kits_done += 1
+		if _cancel_requested:
+			break
 
 	if renderer != null:
 		renderer.queue_free()
@@ -333,28 +363,49 @@ func run_index(force: bool = false) -> void:
 	_index_button.disabled = false
 	reload()
 	var note: String
-	if kits_found == 0:
+	if _cancel_requested:
+		# Whole kits finished before the cancel keep their new indexes; the one
+		# in flight kept its old one. Index again to carry on from there.
+		note = ("Indexing cancelled — %d kits finished. Index again to continue."
+			% kits_done)
+	elif kits_found == 0:
 		note = ("No kits found under the configured roots — each root's " +
 			"subfolders are kits, or the root itself if it holds meshes.")
 	else:
 		note = "Indexed."
-		if not skipped_kits.is_empty():
-			note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
-		if not unmet.is_empty():
-			# Stated rather than silent: the composites are genuinely absent
-			# from the dock's renderable set, and a run that quietly drew
-			# fewer tiles than last time is the kind of thing people notice
-			# a week later and blame on the indexer.
-			note += " %d composites skipped for absent dependency kits." % unmet.size()
-			for u in unmet:
-				push_warning("Kit Browser: skipped composite %s" % u)
-		if not failures.is_empty():
-			note += " %d assets failed to render (see Output)." % failures.size()
-			for f in failures:
-				push_warning("Kit Browser: could not thumbnail %s" % f)
-		if not write_failures.is_empty():
-			note += " %d kit indexes failed to write (see Output)." % write_failures.size()
+	# Outside the branch above: a cancelled run still rendered whatever it got
+	# through, and whatever failed in there is owed to the user exactly as much
+	# as it is after a run that finished.
+	if not skipped_kits.is_empty():
+		note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
+	if not unmet.is_empty():
+		# Stated rather than silent: the composites are genuinely absent
+		# from the dock's renderable set, and a run that quietly drew
+		# fewer tiles than last time is the kind of thing people notice
+		# a week later and blame on the indexer.
+		note += " %d composites skipped for absent dependency kits." % unmet.size()
+		for u in unmet:
+			push_warning("Kit Browser: skipped composite %s" % u)
+	if not failures.is_empty():
+		note += " %d assets failed to render (see Output)." % failures.size()
+		for f in failures:
+			push_warning("Kit Browser: could not thumbnail %s" % f)
+	if not write_failures.is_empty():
+		note += " %d kit indexes failed to write (see Output)." % write_failures.size()
 	_status.text = note
+
+
+## Ask a running index to stop after the thumbnail it is drawing now.
+##
+## Not a kill: render_one is mid-await on the SubViewport, and tearing that
+## down under it is how a half-written .webp gets left on disk to be believed
+## by the next run. One more render is a few seconds.
+func cancel_index() -> void:
+	if not _indexing:
+		return
+	_cancel_requested = true
+	_cancel_button.disabled = true
+	_progress_label.text = "Cancelling — finishing the current thumbnail…"
 
 
 ## Re-read the index from disk and rebuild the facet dropdowns.
