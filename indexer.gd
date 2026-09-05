@@ -194,22 +194,30 @@ static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArr
 	for f in files:
 		if String(f["path"]).get_extension() != "tscn":
 			mesh_stems[String(f["path"]).get_basename()] = true
-	var deps := composite_deps(kit_dir) if not roots.is_empty() else {}
+	var deps := composite_deps(kit_dir)
 	var out := []
 	for f in files:
 		var path := String(f["path"])
 		if path.get_extension() == "tscn":
 			if mesh_stems.has(path.get_basename()):
 				continue
-			# Checked before _has_3d_visuals, which instantiates the scene and
-			# is therefore itself one of the two places the missing-prop errors
-			# came from. A manifest entry already says this is a 3D composite,
-			# so the gate the load would have provided is not needed here.
-			var missing := unmet_deps(deps.get(path, []), roots)
-			if not missing.is_empty():
-				f["unmet_deps"] = missing
-				out.append(f)
-				continue
+			if deps.has(path):
+				# What the composite needs is a fact about the asset and goes
+				# in the index; which of those are checked out is a fact about
+				# this machine and is only used here, to decide what to load.
+				f["kind"] = "composite"
+				f["dep_kits"] = deps[path]
+				# Checked before _has_3d_visuals, which instantiates the scene
+				# and is therefore itself one of the two places the missing-
+				# prop errors came from. A manifest entry already says this is
+				# a 3D composite, so the gate the load would have provided is
+				# not needed here.
+				var missing := unmet_deps(deps[path], roots) \
+					if not roots.is_empty() else PackedStringArray()
+				if not missing.is_empty():
+					f["unmet_deps"] = missing
+					out.append(f)
+					continue
 			if not _has_3d_visuals("%s/%s" % [kit_dir, path]):
 				continue
 		out.append(f)
@@ -314,6 +322,14 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 			# back as a float and would be re-written as "100.0" — flipping
 			# every index's format the first time the addon re-indexes it.
 			prior["mtime"] = int(prior.get("mtime", -1))
+			# Kept whole, except for what the scan knows better: the manifest
+			# is the authority on a composite's dependencies, and a stored
+			# unmet_deps (older addon builds wrote one) is a machine-local
+			# answer that must never survive into another machine's dock.
+			prior.erase("unmet_deps")
+			if file.has("dep_kits"):
+				prior["kind"] = file["kind"]
+				prior["dep_kits"] = file["dep_kits"]
 			entries.append(prior)
 			continue
 		var parts := PackedStringArray()
@@ -327,13 +343,15 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 			"category": parts[0].to_lower() if parts.size() > 1 else "",
 			"subcategory": parts[1].to_lower() if parts.size() > 2 else "",
 		}
+		if file.has("dep_kits"):
+			entry["kind"] = file["kind"]
+			entry["dep_kits"] = file["dep_kits"]
 		# Indexed, but never rendered: the thumbnail is the second place the
 		# scene gets loaded, and a composite drawn without the props it is
-		# missing is a picture that lies about the asset. The entry carries the
-		# reason so the dock can say so instead of showing an empty tile.
-		if file.has("unmet_deps"):
-			entry["unmet_deps"] = file["unmet_deps"]
-		else:
+		# missing is a picture that lies about the asset. The reason itself
+		# stays out of the entry -- the catalog re-derives it on whichever
+		# machine reads the index, from the dep_kits written above.
+		if not file.has("unmet_deps"):
 			render.append(entries.size())
 		entries.append(entry)
 	return {"entries": entries, "render": render}

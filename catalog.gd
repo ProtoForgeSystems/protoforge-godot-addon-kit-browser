@@ -63,32 +63,21 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 					# thumbnail mirrors Composites/<Name> under thumbnails/.
 					entry["mesh_path"] = "%s/%s" % [kit_dir, rel]
 					entry["path"] = entry["mesh_path"]
-					entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
-						rel.get_basename(), THUMB_EXT]
-					# Recomputed here rather than trusted from the index: the
-					# index states which kits the composite NEEDS, which is a
-					# fact about the asset, while whether they are checked out
-					# is a fact about this machine. A pipeline-written index
-					# (richer than anything the addon rebuilds, and therefore
-					# never overwritten without force) carries the first and
-					# cannot know the second.
-					var missing := Indexer.unmet_deps(asset.get("dep_kits", []), kit_roots)
-					if not missing.is_empty():
-						entry["unmet_deps"] = missing
-					assets.append(entry)
-					continue
-				# The mesh path stays, because the thumbnail is keyed off it and
-				# the index describes the mesh. What gets placed is the wrapper
-				# scene: instancing the glTF directly welds a scene to it, and
-				# adding collision or a script later would then mean editing
-				# every scene that used it. Falls back to the mesh where no
-				# wrapper exists yet.
-				entry["mesh_path"] = ("%s/%s" % [kit_dir, rel]) if base.is_empty() \
-					else ("%s/%s/%s" % [kit_dir, base, rel])
+				else:
+					# The mesh path stays, because the thumbnail is keyed off
+					# it and the index describes the mesh. What gets placed is
+					# the wrapper scene: instancing the glTF directly welds a
+					# scene to it, and adding collision or a script later would
+					# then mean editing every scene that used it. Falls back to
+					# the mesh where no wrapper exists yet.
+					entry["mesh_path"] = ("%s/%s" % [kit_dir, rel]) if base.is_empty() \
+						else ("%s/%s/%s" % [kit_dir, base, rel])
+					var wrapper := "%s.tscn" % String(entry["mesh_path"]).get_basename()
+					entry["path"] = wrapper if ResourceLoader.exists(wrapper) \
+						else entry["mesh_path"]
 				entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
 					rel.get_basename(), THUMB_EXT]
-				var wrapper := "%s.tscn" % String(entry["mesh_path"]).get_basename()
-				entry["path"] = wrapper if ResourceLoader.exists(wrapper) else entry["mesh_path"]
+				_mark_unmet(entry, kit_roots)
 				assets.append(entry)
 	assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if a["kit"] != b["kit"]:
@@ -99,6 +88,26 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 	# vocabulary can change without a reindex or a submodule commit.
 	Facets.annotate(assets)
 	return assets
+
+
+## Decided here, never read from the index: the index states which kits an
+## asset NEEDS (dep_kits), a fact about the asset, while whether they are
+## checked out is a fact about this machine. An index is committed with its
+## kit, so the machine that wrote it is not the one reading it -- any stored
+## answer is somebody else's and is discarded before this one is taken.
+##
+## An unplaceable composite also leaves its variant family: a family tile
+## shows one member and stands for the rest, and a red tile hiding placeable
+## siblings (or a normal one hiding a dead sibling) lies about them either way.
+static func _mark_unmet(entry: Dictionary, kit_roots: PackedStringArray) -> void:
+	entry.erase("unmet_deps")
+	if not entry.has("dep_kits"):
+		return
+	var missing := Indexer.unmet_deps(entry["dep_kits"], kit_roots)
+	if missing.is_empty():
+		return
+	entry["unmet_deps"] = missing
+	entry.erase("family")
 
 
 ## Kit names relative to the kits directory, e.g. "Rooftop", "Deckogon/Safehouse".
