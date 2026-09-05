@@ -44,6 +44,13 @@ Then enable it under **Project > Project Settings > Plugins**.
 - **Incremental indexing** — clicking **Index** only scans kits and renders
   thumbnails that are new or changed; a **Force re-index** option in Settings
   rebuilds every index and thumbnail from scratch.
+- **Cancellable** — a long index run can be stopped from its progress popup.
+  Kits already finished keep their new indexes, the kit in flight keeps what
+  it rendered, and clicking **Index** again carries on from there.
+- **Dependency-aware composites** — a composite scene that instances props
+  from other kits is shown but not placed while any of those kits is not
+  checked out, with the tooltip naming the kits to fetch, instead of loading
+  half-built and logging a missing-resource error per prop.
 
 ## How indexing works
 
@@ -54,7 +61,16 @@ mesh with its category, size, and module-bay metadata. Thumbnails render to a
 A file only earns an entry if it has something to draw. Scenes are checked
 before rendering and meshes by the render itself, so animation-only glTFs,
 tool scenes, and other geometry-less files are left out rather than listed as
-tiles that can never have a picture.
+tiles that can never have a picture. The one exception is a composite whose
+dependency kits are missing: it is indexed but not rendered, and the dock
+lists it as unavailable until the kits it needs are checked out.
+
+A kit that ships composites declares, in `Composites/composites.json`, which
+other kits each composite instances props from. The indexer copies that list
+into each composite's index entry as `dep_kits`; whether those kits are
+present is decided by the browser on the machine reading the index, never
+stored in it, since the index is committed with the kit and read on machines
+that have fewer kits than the one that wrote it.
 
 Both `index.json` and `thumbnails/` are plain project files — safe to commit
 alongside the kit's own assets, so a teammate (or CI) never has to re-render
@@ -64,7 +80,8 @@ anything just to browse the library.
 
 This addon is source-agnostic by design: kits arrive from Unreal, Unity, or
 direct Blender intake, but the browser only ever sees the published
-`index.json` contract.
+`index.json` contract, plus the `Composites/composites.json` manifest a kit
+ships when it has composites.
 
 The development home is `ProtoForgeSystems/unreal-assets`, which carries the
 test suites (`tests/test_kit_browser_*.gd`) against its attached kit library.
