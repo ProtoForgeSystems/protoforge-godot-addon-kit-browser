@@ -670,8 +670,17 @@ func _on_activated(index: int) -> void:
 ## Grouping is what makes a 3,291-asset library scannable, but it also puts two
 ## thirds of it out of reach: a double-click can only ever place the one mesh the
 ## tile happens to show. This is the way to the rest of the family.
+##
+## Ungrouped there is nothing behind a tile: every family member is already its
+## own tile, so a menu offering the siblings would misrepresent a tile that
+## stands for exactly one mesh, and contradict the grid that was asked for. The
+## details pane agrees -- its "right-click to choose a variant" hint is keyed on
+## family_count, which only collapse_families sets -- so without this the dock
+## said nothing was there while the menu said two things were.
 func _on_clicked(index: int, _at: Vector2, mouse_button: int) -> void:
 	if mouse_button != MOUSE_BUTTON_RIGHT or index >= _shown.size():
+		return
+	if not _group_variants.button_pressed:
 		return
 	var asset: Dictionary = _shown[index]
 	_variant_assets = Catalog.family_members(_filtered, asset.get("family", ""), asset.get("kit", ""))
