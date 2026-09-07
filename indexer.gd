@@ -458,14 +458,26 @@ static func build_doc(entries: Array) -> Dictionary:
 	}
 
 
+## The thumbnail directory, marked .gdignore so Godot leaves it alone.
+##
+## Thumbnails are decoded by hand at display time and are never wanted as
+## imported textures: a kit of a few hundred meshes would otherwise cost the
+## same number of import jobs and .import files, inside somebody's submodule.
+## Its own function because it used to be a side effect of write_index, which
+## made it something a render that writes no index silently did not get.
+static func ensure_thumb_dir(kit_dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path("%s/%s" % [kit_dir, THUMB_DIR]))
+	var marker_path := "%s/%s/.gdignore" % [kit_dir, THUMB_DIR]
+	if FileAccess.file_exists(marker_path):
+		return
+	var marker := FileAccess.open(marker_path, FileAccess.WRITE)
+	if marker != null:
+		marker.close()
+
+
 static func write_index(kit_dir: String, doc: Dictionary) -> Error:
-	var thumb_abs := ProjectSettings.globalize_path("%s/%s" % [kit_dir, THUMB_DIR])
-	DirAccess.make_dir_recursive_absolute(thumb_abs)
-	if not FileAccess.file_exists("%s/%s/.gdignore" % [kit_dir, THUMB_DIR]):
-		var marker := FileAccess.open("%s/%s/.gdignore" % [kit_dir, THUMB_DIR],
-			FileAccess.WRITE)
-		if marker != null:
-			marker.close()
+	ensure_thumb_dir(kit_dir)
 	var tmp := "%s/index.json.tmp" % kit_dir
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:

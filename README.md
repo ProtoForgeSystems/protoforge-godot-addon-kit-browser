@@ -44,6 +44,12 @@ Then enable it under **Project > Project Settings > Plugins**.
 - **Incremental indexing** — clicking **Index** only scans kits and renders
   thumbnails that are new or changed; a **Force re-index** option in Settings
   rebuilds every index and thumbnail from scratch.
+- **Per-kit re-index** — pick a kit and a **Re-index &lt;kit&gt;** button appears
+  beside **Settings…**, rebuilding that one kit. Over a library of dozens of
+  kits a full force re-index is hours; one kit is minutes. It is also the only
+  way to get thumbnails for a kit whose `index.json` another tool wrote (see
+  below): that index is kept exactly as it is and only the pictures are
+  redrawn.
 - **Cancellable** — a long index run can be stopped from its progress popup.
   Kits already finished keep their new indexes, the kit in flight keeps what
   it rendered, and clicking **Index** again carries on from there.
@@ -64,6 +70,15 @@ tool scenes, and other geometry-less files are left out rather than listed as
 tiles that can never have a picture. The one exception is a composite whose
 dependency kits are missing: it is indexed but not rendered, and the dock
 lists it as unavailable until the kits it needs are checked out.
+
+An `index.json` records which tool wrote it. The addon will not overwrite one
+it did not write — a run over a library that mixes hand-managed kits with
+addon-indexed ones reports how many it left alone rather than replacing
+richer classifications with what a directory scan can infer. **Force
+re-index** overrides that for every kit at once. **Re-index &lt;kit&gt;** does
+not: it renders the missing thumbnails against the foreign index and leaves
+the index itself untouched, which is usually what a kit with blank tiles
+actually needs.
 
 A kit that ships composites declares, in `Composites/composites.json`, which
 other kits each composite instances props from. The indexer copies that list

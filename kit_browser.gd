@@ -44,6 +44,10 @@ var _variant_assets: Array = []
 
 var _icon_px: int = Settings.tile_size()
 var _index_button: Button
+## Rebuild one kit, from the dock rather than from the Settings dialog. The
+## library here is 72 submodules and a force re-index over all of them is
+## hours; one kit whose thumbnails never rendered is minutes.
+var _kit_index_button: Button
 var _settings_dialog: AcceptDialog
 var _indexing := false
 
@@ -121,6 +125,20 @@ func _build_ui() -> void:
 	settings_button.text = "Settings…"
 	settings_button.pressed.connect(func() -> void: _settings_dialog.popup_centered())
 	row2.add_child(settings_button)
+
+	# Only meaningful with one kit picked, so it is hidden under "All kits"
+	# rather than sitting there disabled: with every kit selected it would be
+	# the Settings dialog's force re-index under a second name.
+	_kit_index_button = Button.new()
+	_kit_index_button.text = "Re-index kit"
+	_kit_index_button.tooltip_text = ("Rebuild the selected kit's thumbnails, " +
+		"and its index where this addon owns it.\nA pipeline-generated index " +
+		"is left exactly as it is — only the thumbnails are redrawn.")
+	_kit_index_button.pressed.connect(func() -> void:
+		var kit := _picked(_kit_pick)
+		if not kit.is_empty():
+			run_index(true, kit))
+	row2.add_child(_kit_index_button)
 
 	# Its own row: a slider sharing a flow row with checkboxes wraps
 	# unpredictably and gets squeezed to whatever width is left over.
@@ -246,7 +264,14 @@ func set_tile_size(px: int) -> void:
 ## pipeline. No is_editor_hint() guard: nothing in this body touches
 ## EditorInterface, and the button that reaches this is only pressable
 ## inside a running editor anyway.
-func run_index(force: bool = false) -> void:
+##
+## `only_kit` narrows the whole run to one kit label, and is also what makes a
+## kit the addon does not own renderable at all: a plain run skips a
+## pipeline-generated index outright, so a kit that shipped without
+## thumbnails could never get any without a force that would have taken the
+## classifier's work with it. Named, one kit at a time, that index is kept and
+## only its thumbnails are redrawn.
+func run_index(force: bool = false, only_kit: String = "") -> void:
 	if _indexing:
 		return
 	_set_running(true)
@@ -257,6 +282,8 @@ func run_index(force: bool = false) -> void:
 	var renderer: Node = null
 	var failures := PackedStringArray()
 	var skipped_kits := PackedStringArray()
+	## Kits whose thumbnails were redrawn against an index left as it was.
+	var preserved := PackedStringArray()
 	var unmet := PackedStringArray()
 	var write_failures := PackedStringArray()
 	var kits_found := 0
@@ -276,26 +303,67 @@ func run_index(force: bool = false) -> void:
 			var norm_dir := kit_dir.rstrip("/")
 			if indexed_dirs.has(norm_dir):
 				continue
+			var kit_label := root.get_file() if kit == "." else kit
+			# Before the dedupe mark and the found count both: a narrowed run
+			# has not "found" the kits it was never asked about, and saying so
+			# would put every other kit in the library into its status line.
+			if not only_kit.is_empty() and kit_label != only_kit:
+				continue
 			indexed_dirs[norm_dir] = true
 			kits_found += 1
-			var kit_label := root.get_file() if kit == "." else kit
 			var old: Variant = null
 			if FileAccess.file_exists("%s/index.json" % kit_dir):
 				old = JSON.parse_string(FileAccess.get_file_as_string(
 					"%s/index.json" % kit_dir))
-			if not Indexer.can_overwrite(old, force):
+			# Whether this run may rewrite the kit's index.json. False only on
+			# the narrowed render-only path below, where the entries being
+			# drawn are somebody else's and stay that way.
+			var writable := Indexer.can_overwrite(old, force)
+			var scanned: Array = []
+			var entries: Array = []
+			# {"entry": int, "rel": String, "mesh": String, "out": String}.
+			# "entry" indexes into `entries`, or -1 where there are none to
+			# write back to.
+			var jobs: Array = []
+			if writable:
+				scanned = Indexer.scan_kit(kit_dir, roots)
+				var plan := Indexer.plan(scanned, old,
+					Indexer.existing_thumbs(kit_dir), force, tiers)
+				entries = plan["entries"]
+				for i in plan["render"]:
+					var entry: Dictionary = entries[i]
+					var rel := String(entry["path"])
+					jobs.append({
+						"entry": i,
+						"rel": rel,
+						"mesh": "%s/%s" % [kit_dir, rel],
+						"out": "%s/%s/%s%s" % [kit_dir, Indexer.THUMB_DIR,
+							rel.get_basename(), Indexer.THUMB_EXT],
+					})
+				# Recomputed over kept and fresh entries together: an unchanged
+				# asset keeps its old entry (mtime/thumbnail skip is untouched),
+				# but a re-indexed sibling arriving alongside it can still change
+				# the family it belongs to.
+				Indexer.annotate_families(entries)
+			elif only_kit.is_empty():
 				skipped_kits.append(kit_label)
 				continue
-			var scanned := Indexer.scan_kit(kit_dir, roots)
-			var plan := Indexer.plan(scanned, old,
-				Indexer.existing_thumbs(kit_dir), force, tiers)
-			var entries: Array = plan["entries"]
-			var jobs: Array = plan["render"]
-			# Recomputed over kept and fresh entries together: an unchanged
-			# asset keeps its old entry (mtime/thumbnail skip is untouched),
-			# but a re-indexed sibling arriving alongside it can still change
-			# the family it belongs to.
-			Indexer.annotate_families(entries)
+			else:
+				jobs = _foreign_jobs(kit_label)
+				# Claimed only once there is something to redraw: a foreign
+				# kit the catalog holds nothing for had no thumbnails
+				# "redrawn", and saying so in the status line is a lie.
+				if not jobs.is_empty():
+					preserved.append(kit_label)
+				for a in _all:
+					if a.get("kit", "") == kit_label and a.has("unmet_deps"):
+						unmet.append("%s/%s needs %s" % [kit_label,
+							a.get("path", ""), ", ".join(a["unmet_deps"])])
+			# Before the first render, not as a side effect of the index
+			# write: the render-only path writes no index, and 147 webps
+			# landing in an unmarked directory are 147 pointless imports.
+			if not jobs.is_empty():
+				Indexer.ensure_thumb_dir(kit_dir)
 			if not jobs.is_empty() and renderer == null:
 				renderer = Thumbnailer.new()
 				add_child(renderer)
@@ -307,8 +375,10 @@ func run_index(force: bool = false) -> void:
 			for j in jobs.size():
 				if _cancel_requested:
 					break
-				var entry: Dictionary = entries[jobs[j]]
-				var note := "Indexing %s — %d/%d" % [kit_label, j + 1, jobs.size()]
+				var job: Dictionary = jobs[j]
+				var note := "%s %s — %d/%d" % [
+					"Indexing" if writable else "Rendering",
+					kit_label, j + 1, jobs.size()]
 				_status.text = note
 				# Per-kit max rather than a total across every kit: the total
 				# is only known after every kit's plan has run, and re-scanning
@@ -317,20 +387,21 @@ func run_index(force: bool = false) -> void:
 				_progress_label.text = note
 				_progress_bar.max_value = jobs.size()
 				_progress_bar.value = j + 1
-				var out := "%s/%s/%s%s" % [kit_dir, Indexer.THUMB_DIR,
-					String(entry["path"]).get_basename(), Indexer.THUMB_EXT]
 				var result: Dictionary = await renderer.render_one(
-					"%s/%s" % [kit_dir, entry["path"]], out, Settings.resolution())
+					job["mesh"], job["out"], Settings.resolution())
 				done += 1
+				var slot: int = job["entry"]
 				if result["ok"]:
-					entry["size_m"] = result["size_m"]
+					if slot >= 0:
+						entries[slot]["size_m"] = result["size_m"]
 				elif result.get("reason", "") == Thumbnailer.NO_GEOMETRY:
 					# Not a failure and not an asset: a file that loaded fine
 					# and has nothing to draw. Dropped below rather than here,
 					# because jobs indexes into entries.
-					dropped.append(jobs[j])
+					if slot >= 0:
+						dropped.append(slot)
 				else:
-					failures.append("%s/%s" % [kit_label, entry["path"]])
+					failures.append("%s/%s" % [kit_label, job["rel"]])
 			# A cancel that landed while this kit's last thumbnail was drawing
 			# is not an abort: the kit finished, and its index is written like
 			# any other. Only a kit with renders still owed is salvaged --
@@ -338,27 +409,34 @@ func run_index(force: bool = false) -> void:
 			# index -- and a pipeline index is left exactly as it was, since a
 			# partial addon doc would take the classifier's work with it.
 			var aborted := done < jobs.size()
-			var to_write: Variant = entries
-			if aborted:
-				to_write = Indexer.salvage(entries, jobs, done, dropped, old)
-			else:
-				to_write = Indexer.prune(entries, dropped)
-			if to_write != null and (not to_write.is_empty() or old != null):
-				var write_err := Indexer.write_index(kit_dir, Indexer.build_doc(to_write))
-				if write_err != OK:
-					push_warning("Kit Browser: could not write index.json for %s (%s)"
-						% [kit_label, write_err])
-					write_failures.append(kit_label)
-				elif not aborted:
-					kits_done += 1
-			# Reported for what was actually written: a composite held back
-			# from a kit whose index never landed is not something the dock
-			# will be missing.
-			if to_write != null:
-				for f in scanned:
-					if f.has("unmet_deps"):
-						unmet.append("%s/%s needs %s" % [kit_label, f["path"],
-							", ".join(f["unmet_deps"])])
+			if writable:
+				var slots := []
+				for job in jobs:
+					slots.append(job["entry"])
+				var to_write: Variant = entries
+				if aborted:
+					to_write = Indexer.salvage(entries, slots, done, dropped, old)
+				else:
+					to_write = Indexer.prune(entries, dropped)
+				if to_write != null and (not to_write.is_empty() or old != null):
+					var write_err := Indexer.write_index(kit_dir,
+						Indexer.build_doc(to_write))
+					if write_err != OK:
+						push_warning("Kit Browser: could not write index.json for %s (%s)"
+							% [kit_label, write_err])
+						write_failures.append(kit_label)
+					elif not aborted:
+						kits_done += 1
+				# Reported for what was actually written: a composite held back
+				# from a kit whose index never landed is not something the dock
+				# will be missing.
+				if to_write != null:
+					for f in scanned:
+						if f.has("unmet_deps"):
+							unmet.append("%s/%s needs %s" % [kit_label, f["path"],
+								", ".join(f["unmet_deps"])])
+			elif not aborted:
+				kits_done += 1
 			if _cancel_requested:
 				break
 		if _cancel_requested:
@@ -378,8 +456,10 @@ func run_index(force: bool = false) -> void:
 		note = ("Indexing cancelled — %d kits finished, rendered thumbnails kept. "
 			+ "Index again to continue.") % kits_done
 	elif kits_found == 0:
-		note = ("No kits found under the configured roots — each root's " +
-			"subfolders are kits, or the root itself if it holds meshes.")
+		note = ("Kit %s is not under any configured root." % only_kit) \
+			if not only_kit.is_empty() \
+			else ("No kits found under the configured roots — each root's " +
+				"subfolders are kits, or the root itself if it holds meshes.")
 	else:
 		note = "Indexed."
 	# Outside the branch above: a cancelled run still rendered whatever it got
@@ -387,6 +467,12 @@ func run_index(force: bool = false) -> void:
 	# as it is after a run that finished.
 	if not skipped_kits.is_empty():
 		note += " Skipped %d pipeline-managed kits." % skipped_kits.size()
+	# Stated every time rather than only on request: a press labelled
+	# "Re-index <kit>" that quietly declined to rewrite the index would leave
+	# the user believing a stale classification had just been refreshed.
+	if not preserved.is_empty():
+		note += (" %s: thumbnails redrawn, pipeline index left as it was."
+			% ", ".join(preserved))
 	if not unmet.is_empty():
 		# Stated rather than silent: the composites are genuinely absent
 		# from the dock's renderable set, and a run that quietly drew
@@ -404,6 +490,43 @@ func run_index(force: bool = false) -> void:
 	_status.text = note
 
 
+## What to render for a kit whose index.json is not this addon's to rewrite.
+##
+## Taken from the loaded catalog rather than from a fresh scan, because the
+## catalog is what the dock looks a thumbnail up with. A pipeline index
+## declares base "1K" and names "Environment/Foo.gltf", so its tile wants
+## thumbnails/Environment/Foo.webp; a scan of the same kit sees
+## "1K/Environment/Foo.gltf" and would write thumbnails/1K/Environment/
+## Foo.webp -- every tile still blank after a run that reported success.
+## Reading the same array the tiles are built from makes that disagreement
+## impossible rather than merely fixed.
+##
+## No mtime or existing-thumbnail check: this is only reached from a button
+## whose whole purpose is to redraw a kit whose pictures are wrong, and a
+## thumbnail that exists but does not load is exactly the case that a
+## "render what is missing" pass would decline to fix.
+func _foreign_jobs(kit_label: String) -> Array:
+	var jobs := []
+	for a in _all:
+		if a.get("kit", "") != kit_label:
+			continue
+		# Same rule as Indexer.plan: a composite missing the kits it instances
+		# is indexed but never drawn, because the picture would lie about it.
+		if a.has("unmet_deps"):
+			continue
+		var mesh := String(a.get("mesh_path", ""))
+		var thumb := String(a.get("thumb_path", ""))
+		if mesh.is_empty() or thumb.is_empty():
+			continue
+		jobs.append({
+			"entry": -1,
+			"rel": String(a.get("path", mesh)).trim_prefix("res://"),
+			"mesh": mesh,
+			"out": thumb,
+		})
+	return jobs
+
+
 ## One switch for everything that must agree on whether a run is in flight.
 ## Both ways of starting a run lock together: Index was disabled during a run
 ## but Force re-index was not, and a Force press mid-run handed off to a
@@ -412,6 +535,7 @@ func run_index(force: bool = false) -> void:
 func _set_running(running: bool) -> void:
 	_indexing = running
 	_index_button.disabled = running
+	_kit_index_button.disabled = running
 	_settings_dialog.force_button.disabled = running
 	_cancel_button.disabled = not running
 	if running:
@@ -488,6 +612,15 @@ func _picked(picker: OptionButton) -> String:
 	return "" if picker.selected <= 0 else picker.get_item_text(picker.selected)
 
 
+## Shown only for a single picked kit, and named after it: "Re-index kit"
+## alone gives no clue which one a press is about to spend minutes on.
+func _refresh_kit_index_button() -> void:
+	var kit := _picked(_kit_pick)
+	_kit_index_button.visible = not kit.is_empty()
+	if not kit.is_empty():
+		_kit_index_button.text = "Re-index %s" % kit
+
+
 func _refresh_tier_picker() -> void:
 	var tiers := Settings.variant_tiers()
 	_tier_pick.visible = not tiers.is_empty()
@@ -502,6 +635,7 @@ func _refresh_tier_picker() -> void:
 func _apply() -> void:
 	for picker in [_kit_pick, _cat_pick, _bay_pick]:
 		_retip(picker)
+	_refresh_kit_index_button()
 	_filtered = Catalog.filter(_all, _search.text, _picked(_kit_pick),
 		_picked(_cat_pick), _review_only.button_pressed, _picked(_bay_pick))
 	# Tiers collapse before families: the family badge and the right-click
