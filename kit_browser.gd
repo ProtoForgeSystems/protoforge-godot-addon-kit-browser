@@ -315,10 +315,7 @@ func run_index(force: bool = false, only_kit: String = "") -> void:
 			if FileAccess.file_exists("%s/index.json" % kit_dir):
 				old = JSON.parse_string(FileAccess.get_file_as_string(
 					"%s/index.json" % kit_dir))
-			# Whether this run may rewrite the kit's index.json. False only on
-			# the narrowed render-only path below, where the entries being
-			# drawn are somebody else's and stay that way.
-			var writable := Indexer.can_overwrite(old, force)
+			var writable := _writable(old, force, only_kit)
 			var scanned: Array = []
 			var entries: Array = []
 			# {"entry": int, "rel": String, "mesh": String, "out": String}.
@@ -488,6 +485,23 @@ func run_index(force: bool = false, only_kit: String = "") -> void:
 	if not write_failures.is_empty():
 		note += " %d kit indexes failed to write (see Output)." % write_failures.size()
 	_status.text = note
+
+
+## Whether this run may rewrite a kit's index.json.
+##
+## Force is the human overriding the addon's refusal to touch an index it did
+## not write -- but only from Settings, across the whole library, where that
+## is the entire act being asked for. A per-kit run must not inherit it: the
+## button's reason to exist for a foreign kit is to draw the thumbnails
+## WITHOUT rewriting the index, and passing force straight through made that
+## branch unreachable from the only control that reaches it. The symptom was
+## a run over ModularSciFiStation planning 296 jobs instead of 147 and
+## writing them under thumbnails/1K/, where no tile looks.
+##
+## Force still reaches Indexer.plan on the writable path, so a per-kit run
+## over a kit the addon owns rebuilds every entry and thumbnail as asked.
+func _writable(old_doc: Variant, force: bool, only_kit: String) -> bool:
+	return Indexer.can_overwrite(old_doc, force and only_kit.is_empty())
 
 
 ## What to render for a kit whose index.json is not this addon's to rewrite.
