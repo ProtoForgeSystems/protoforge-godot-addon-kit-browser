@@ -319,19 +319,31 @@ static func _collect_thumbs(kit_dir: String, rel: String, out: Dictionary) -> vo
 
 ## An index someone else produced is a thing this button must not destroy:
 ## inside a ProtoForge repo the pipeline's classifications are richer than
-## anything a directory scan can rebuild. Force is the human overriding that.
-static func can_overwrite(old_doc: Variant, force: bool) -> bool:
+## anything a directory scan can rebuild.
+##
+## `overwrite_foreign` is the human overriding that, and it is deliberately
+## NOT the same flag as plan()'s `rebuild`. One says "redraw everything you
+## already know about"; the other says "throw away what another tool
+## established and re-derive it from directory names". They used to be one
+## boolean called `force`, which is how a per-kit run meant only to redraw
+## thumbnails came to be permitted to replace a pipeline index.
+static func can_overwrite(old_doc: Variant, overwrite_foreign: bool) -> bool:
 	if typeof(old_doc) != TYPE_DICTIONARY:
 		return true
-	return force or old_doc.get("generator", "") == GENERATOR
+	return overwrite_foreign or old_doc.get("generator", "") == GENERATOR
 
 
+## `rebuild` re-derives every entry and schedules every thumbnail, instead of
+## keeping an entry whose mtime and thumbnail both say nothing changed. It
+## decides how much work this kit is worth, and nothing else -- whether the
+## kit may be written at all is can_overwrite's question, asked separately.
+##
 ## `tiers` (Settings.variant_tiers()) names resolution-tier directories to
 ## skip when deriving category/subcategory from the path — a tiered kit's
 ## first component is "1K", and "1k" as a category is a tier masquerading as
 ## taxonomy. The path itself always stays real; only the labels skip.
 static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
-		force: bool, tiers: PackedStringArray = PackedStringArray()) -> Dictionary:
+		rebuild: bool, tiers: PackedStringArray = PackedStringArray()) -> Dictionary:
 	var old := {}
 	if typeof(old_doc) == TYPE_DICTIONARY:
 		for a in old_doc.get("assets", []):
@@ -345,7 +357,7 @@ static func plan(scanned: Array, old_doc: Variant, existing: Dictionary,
 		# The entry is kept whole, not rebuilt: it may carry size_m from a
 		# previous render, and rebuilding would throw that away for a file
 		# that has not changed.
-		if not force and typeof(prior) == TYPE_DICTIONARY \
+		if not rebuild and typeof(prior) == TYPE_DICTIONARY \
 				and int(prior.get("mtime", -1)) == int(file["mtime"]) \
 				and existing.has(thumb):
 			# JSON.parse_string has no int type, so a kept entry's mtime came

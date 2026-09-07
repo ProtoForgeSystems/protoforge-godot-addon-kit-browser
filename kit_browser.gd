@@ -135,9 +135,7 @@ func _build_ui() -> void:
 		"and its index where this addon owns it.\nA pipeline-generated index " +
 		"is left exactly as it is — only the thumbnails are redrawn.")
 	_kit_index_button.pressed.connect(func() -> void:
-		var kit := _picked(_kit_pick)
-		if not kit.is_empty():
-			run_index(true, kit))
+		run_kit_reindex(_picked(_kit_pick)))
 	row2.add_child(_kit_index_button)
 
 	# Its own row: a slider sharing a flow row with checkboxes wraps
@@ -175,8 +173,8 @@ func _build_ui() -> void:
 	add_child(_list)
 
 	_settings_dialog = SettingsDialog.new()
-	_settings_dialog.force_reindex_requested.connect(func() -> void: run_index(true))
-	_settings_dialog.index_requested.connect(func() -> void: run_index(false))
+	_settings_dialog.force_reindex_requested.connect(run_force_reindex)
+	_settings_dialog.index_requested.connect(run_incremental_index)
 	# Settings only reach the dock when something re-reads them. Adding
 	# resolution tiers used to leave the tier switch hidden until the editor
 	# was restarted or the addon toggled off and on, because nothing between
@@ -259,19 +257,53 @@ func set_tile_size(px: int) -> void:
 	_apply()
 
 
+## Scan every root and draw what mtime or a missing thumbnail says is owed.
+## Kits whose index another tool wrote are counted and left alone.
+func run_incremental_index() -> void:
+	run_index(false, false)
+
+
+## The Settings dialog's escape hatch: rebuild every index and every
+## thumbnail in the library, including kits this addon did not index. The one
+## act that is allowed to replace another tool's classifications, because
+## replacing them is the entire thing being asked for.
+func run_force_reindex() -> void:
+	run_index(true, true)
+
+
+## The dock's per-kit button: redraw one kit completely, and never take a
+## foreign index down with it. The second flag is false on purpose and is the
+## whole reason the two are separate -- see run_index.
+func run_kit_reindex(kit: String) -> void:
+	if kit.is_empty():
+		return
+	run_index(true, false, kit)
+
+
 ## Scan the configured asset roots and render any thumbnails missing or stale.
 ## A failed mesh is recorded and the run carries on -- same rule as the
 ## pipeline. No is_editor_hint() guard: nothing in this body touches
 ## EditorInterface, and the button that reaches this is only pressable
 ## inside a running editor anyway.
 ##
-## `only_kit` narrows the whole run to one kit label, and is also what makes a
-## kit the addon does not own renderable at all: a plain run skips a
-## pipeline-generated index outright, so a kit that shipped without
-## thumbnails could never get any without a force that would have taken the
-## classifier's work with it. Named, one kit at a time, that index is kept and
-## only its thumbnails are redrawn.
-func run_index(force: bool = false, only_kit: String = "") -> void:
+## Three parameters, three independent questions, and callers do not answer
+## them by hand -- run_incremental_index, run_force_reindex and
+## run_kit_reindex are the three acts the dock actually offers.
+##
+## `rebuild` is how much work this run is worth: redraw everything, or only
+## what mtime and a missing thumbnail say is owed.
+##
+## `overwrite_foreign` is permission to replace an index another tool wrote.
+## Separate from `rebuild` because they used to be one boolean called
+## `force`, and a per-kit run that only wanted the first silently inherited
+## the second -- planning 296 jobs against a fresh scan where 147 against the
+## kit's own index were wanted, and writing them where no tile looks.
+##
+## `only_kit` narrows the run to one kit label. Scope, and nothing else: it
+## no longer decides what the run is permitted to do, which is what let a
+## caller change the gate by accident.
+func run_index(rebuild: bool = false, overwrite_foreign: bool = false,
+		only_kit: String = "") -> void:
 	if _indexing:
 		return
 	_set_running(true)
@@ -315,7 +347,7 @@ func run_index(force: bool = false, only_kit: String = "") -> void:
 			if FileAccess.file_exists("%s/index.json" % kit_dir):
 				old = JSON.parse_string(FileAccess.get_file_as_string(
 					"%s/index.json" % kit_dir))
-			var writable := _writable(old, force, only_kit)
+			var writable := Indexer.can_overwrite(old, overwrite_foreign)
 			var scanned: Array = []
 			var entries: Array = []
 			# {"entry": int, "rel": String, "mesh": String, "out": String}.
@@ -325,7 +357,7 @@ func run_index(force: bool = false, only_kit: String = "") -> void:
 			if writable:
 				scanned = Indexer.scan_kit(kit_dir, roots)
 				var plan := Indexer.plan(scanned, old,
-					Indexer.existing_thumbs(kit_dir), force, tiers)
+					Indexer.existing_thumbs(kit_dir), rebuild, tiers)
 				entries = plan["entries"]
 				for i in plan["render"]:
 					var entry: Dictionary = entries[i]
@@ -485,23 +517,6 @@ func run_index(force: bool = false, only_kit: String = "") -> void:
 	if not write_failures.is_empty():
 		note += " %d kit indexes failed to write (see Output)." % write_failures.size()
 	_status.text = note
-
-
-## Whether this run may rewrite a kit's index.json.
-##
-## Force is the human overriding the addon's refusal to touch an index it did
-## not write -- but only from Settings, across the whole library, where that
-## is the entire act being asked for. A per-kit run must not inherit it: the
-## button's reason to exist for a foreign kit is to draw the thumbnails
-## WITHOUT rewriting the index, and passing force straight through made that
-## branch unreachable from the only control that reaches it. The symptom was
-## a run over ModularSciFiStation planning 296 jobs instead of 147 and
-## writing them under thumbnails/1K/, where no tile looks.
-##
-## Force still reaches Indexer.plan on the writable path, so a per-kit run
-## over a kit the addon owns rebuilds every entry and thumbnail as asked.
-func _writable(old_doc: Variant, force: bool, only_kit: String) -> bool:
-	return Indexer.can_overwrite(old_doc, force and only_kit.is_empty())
 
 
 ## What to render for a kit whose index.json is not this addon's to rewrite.
