@@ -803,7 +803,17 @@ func _load_icon(res_path: String) -> Texture2D:
 	var image := Image.new()
 	# globalize_path because these are ignored by the importer and therefore
 	# are not resources; load_from_file on the real OS path is the way in.
-	if image.load(ProjectSettings.globalize_path(res_path)) != OK:
+	var os_path := ProjectSettings.globalize_path(res_path)
+	# Checked before loading, not just after: Image.load PRINTS
+	# "ERROR: Error opening file" before it returns its error code, so a kit
+	# whose thumbnails were never rendered turned a headless --import into
+	# hundreds of error lines. The tile was already blank and correct; the
+	# noise was the whole defect, and it made a clean import worthless as a
+	# signal that something else had broken.
+	if not FileAccess.file_exists(os_path):
+		_icon_cache[res_path] = null
+		return null
+	if image.load(os_path) != OK:
 		_icon_cache[res_path] = null
 		return null
 	image.resize(_icon_px, _icon_px, Image.INTERPOLATE_LANCZOS)
