@@ -142,8 +142,18 @@ static func size_m(aabb: AABB) -> Dictionary:
 ## draw — an animation-only glTF is the case that matters — which makes it
 ## not an asset at all, and the caller drops it from the index rather than
 ## listing a tile that can never have a picture.
-func render_one(src: String, out_path: String, res: int) -> Dictionary:
-	var resource: Resource = ResourceLoader.load(src)
+##
+## `fresh` re-reads the asset from disk instead of reusing a cached copy. The
+## dock's single-asset redraw sets it: that press means "this file changed",
+## and a scene still cached from an earlier render -- measured: still cached
+## after one redraw, so an edit made outside the editor's own save rendered
+## the old bounds -- would draw the version being replaced. Only the asset
+## itself is re-read; what a composite instances comes from the cache, which
+## the editor keeps current for anything saved through it.
+func render_one(src: String, out_path: String, res: int,
+		fresh: bool = false) -> Dictionary:
+	var resource: Resource = ResourceLoader.load(src, "",
+		ResourceLoader.CACHE_MODE_REPLACE if fresh else ResourceLoader.CACHE_MODE_REUSE)
 	var scene: Node = null
 	if resource is PackedScene:
 		scene = (resource as PackedScene).instantiate()

@@ -41,6 +41,14 @@ var _status: Label
 var _details: Label
 var _variants: PopupMenu
 var _variant_assets: Array = []
+## Right-click on a tile that stands for one mesh. Separate from _variants
+## rather than extra rows in it: that menu is a list of things to place, and a
+## maintenance action between them is one misclick from a placement.
+var _tile_menu: PopupMenu
+## What the tile menu's actions act on, captured when it opened: the clicked
+## tile, or the whole selection when the click landed inside one.
+var _tile_menu_assets: Array = []
+const MENU_REGENERATE := 0
 
 var _icon_px: int = Settings.tile_size()
 var _index_button: Button
@@ -187,6 +195,10 @@ func _build_ui() -> void:
 	_variants.id_pressed.connect(_on_variant_chosen)
 	add_child(_variants)
 
+	_tile_menu = PopupMenu.new()
+	_tile_menu.id_pressed.connect(_on_tile_menu)
+	add_child(_tile_menu)
+
 	_progress_popup = PopupPanel.new()
 	_progress_popup.exclusive = true
 	var progress_box := VBoxContainer.new()
@@ -326,9 +338,10 @@ func run_index(rebuild: bool = false, overwrite_foreign: bool = false,
 	var indexed_dirs := {}
 	var roots := Settings.roots()
 	var tiers := Settings.variant_tiers()
+	var excludes := Settings.excluded_dirs()
 
 	for root in roots:
-		for kit in Indexer.find_kits(root):
+		for kit in Indexer.find_kits(root, excludes):
 			# "." means the root itself is the kit; every other kit name nests
 			# under root. No path ever gets an "/." segment appended.
 			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
@@ -355,7 +368,7 @@ func run_index(rebuild: bool = false, overwrite_foreign: bool = false,
 			# write back to.
 			var jobs: Array = []
 			if writable:
-				scanned = Indexer.scan_kit(kit_dir, roots)
+				scanned = Indexer.scan_kit(kit_dir, roots, excludes)
 				var plan := Indexer.plan(scanned, old,
 					Indexer.existing_thumbs(kit_dir), rebuild, tiers)
 				entries = plan["entries"]
@@ -850,14 +863,20 @@ func _on_activated(index: int) -> void:
 ## details pane agrees -- its "right-click to choose a variant" hint is keyed on
 ## family_count, which only collapse_families sets -- so without this the dock
 ## said nothing was there while the menu said two things were.
+##
+## Every other tile -- ungrouped, or grouped with no family behind it -- stands
+## for exactly one mesh and gets the tile menu instead.
 func _on_clicked(index: int, _at: Vector2, mouse_button: int) -> void:
 	if mouse_button != MOUSE_BUTTON_RIGHT or index >= _shown.size():
 		return
-	if not _group_variants.button_pressed:
-		return
 	var asset: Dictionary = _shown[index]
-	_variant_assets = Catalog.family_members(_filtered, asset.get("family", ""), asset.get("kit", ""))
+	if _group_variants.button_pressed:
+		_variant_assets = Catalog.family_members(_filtered,
+			asset.get("family", ""), asset.get("kit", ""))
+	else:
+		_variant_assets = []
 	if _variant_assets.size() < 2:
+		_open_tile_menu(index)
 		return
 
 	_variants.clear()
@@ -879,6 +898,172 @@ func _on_clicked(index: int, _at: Vector2, mouse_button: int) -> void:
 func _on_variant_chosen(id: int) -> void:
 	if id < _variant_assets.size():
 		instantiate(_variant_assets[id])
+
+
+## The clicked tile, or every selected tile when the click landed on one of
+## them -- the list is multi-select, and redrawing a row of edited pieces one
+## right-click at a time is the chore this menu exists to remove.
+func _tile_menu_targets(index: int) -> Array:
+	var picked := _list.get_selected_items()
+	if not picked.has(index):
+		return [_shown[index]]
+	var out := []
+	for i in picked:
+		if i < _shown.size():
+			out.append(_shown[i])
+	return out
+
+
+func _open_tile_menu(index: int) -> void:
+	_tile_menu_assets = _tile_menu_targets(index)
+	var drawable := _regen_jobs(_tile_menu_assets).size()
+	_tile_menu.clear()
+	_tile_menu.add_item("Regenerate thumbnail" if _tile_menu_assets.size() == 1
+		else "Regenerate %d thumbnails" % drawable, MENU_REGENERATE)
+	var slot := _tile_menu.get_item_index(MENU_REGENERATE)
+	# Disabled rather than left out, so the gesture is still discoverable while
+	# a run holds the renderer or on a composite missing its dependency kits.
+	_tile_menu.set_item_disabled(slot, _indexing or drawable == 0)
+	if drawable == 0:
+		_tile_menu.set_item_tooltip(slot,
+			"Needs its dependency kits checked out before it can be drawn")
+	_tile_menu.reset_size()
+	_tile_menu.position = Vector2i(get_screen_position() + get_local_mouse_position())
+	_tile_menu.popup()
+
+
+func _on_tile_menu(id: int) -> void:
+	if id == MENU_REGENERATE:
+		regenerate_thumbnails(_tile_menu_assets)
+
+
+## One render job per distinct thumbnail among `assets`, in the same shape
+## run_index uses. Skips what run_index skips -- a composite missing its
+## dependency kits, since the picture would lie about it -- and an entry with
+## no mesh or thumbnail to point at. Deduplicated by thumbnail because a
+## tier-collapsed tile and its twin can share one.
+func _regen_jobs(assets: Array) -> Array:
+	var jobs := []
+	var seen := {}
+	for a in assets:
+		if a.has("unmet_deps"):
+			continue
+		var mesh := String(a.get("mesh_path", ""))
+		var thumb := Catalog.thumbnail_path(a)
+		if mesh.is_empty() or thumb.is_empty() or seen.has(thumb):
+			continue
+		seen[thumb] = true
+		var kit_dir := String(a.get("kit_dir", ""))
+		jobs.append({
+			"name": String(a.get("name", mesh.get_file())),
+			"mesh": mesh,
+			"out": thumb,
+			"kit_dir": kit_dir,
+			"rel": mesh.trim_prefix(kit_dir + "/") if not kit_dir.is_empty() else "",
+		})
+	return jobs
+
+
+## Redraw the thumbnails of specific assets, without a pass over their kit.
+##
+## Reached from the tile menu. The case it exists for: an edited composite in
+## Trauma Trigger, whose one new picture cost a Re-index of its whole kit.
+## Takes the run lock like any index run, since both drive the one renderer
+## and write the same thumbnails.
+##
+## Where the kit's index is this addon's, the entry is brought up to date as
+## well (see Indexer.refresh_entry), or the next plain Index would draw the
+## same asset again. A pipeline index is left as it is, as everywhere else.
+##
+## The grid is patched in place rather than reloaded: a reload repopulates the
+## list and drops the scroll position, which throws away the place of whoever
+## just right-clicked a tile halfway down a kit.
+func regenerate_thumbnails(assets: Array) -> void:
+	if _indexing:
+		return
+	var jobs := _regen_jobs(assets)
+	if jobs.is_empty():
+		return
+	_set_running(true)
+	var renderer: Node = Thumbnailer.new()
+	add_child(renderer)
+	renderer.setup()
+	# One redraw is a second or two and a popup for it is noise; a selection
+	# of dozens is long enough to want the Cancel button.
+	if jobs.size() > 1:
+		_progress_popup.popup_centered()
+	var docs := {}
+	var dirty := {}
+	var drawn := 0
+	var empty := PackedStringArray()
+	var failures := PackedStringArray()
+	for j in jobs.size():
+		if _cancel_requested:
+			break
+		var job: Dictionary = jobs[j]
+		var note := "Rendering %s — %d/%d" % [job["name"], j + 1, jobs.size()]
+		_status.text = note
+		_progress_label.text = note
+		_progress_bar.max_value = jobs.size()
+		_progress_bar.value = j + 1
+		var kit_dir: String = job["kit_dir"]
+		if not kit_dir.is_empty():
+			Indexer.ensure_thumb_dir(kit_dir)
+		var result: Dictionary = await renderer.render_one(
+			job["mesh"], job["out"], Settings.resolution(), true)
+		if not result["ok"]:
+			if result.get("reason", "") == Thumbnailer.NO_GEOMETRY:
+				empty.append(job["name"])
+			else:
+				failures.append(job["mesh"])
+			continue
+		drawn += 1
+		_show_regenerated(job["out"], result["size_m"])
+		if kit_dir.is_empty():
+			continue
+		if not docs.has(kit_dir):
+			docs[kit_dir] = JSON.parse_string(FileAccess.get_file_as_string(
+				"%s/index.json" % kit_dir)) \
+				if FileAccess.file_exists("%s/index.json" % kit_dir) else null
+		if Indexer.refresh_entry(docs[kit_dir], job["rel"],
+				FileAccess.get_modified_time(job["mesh"]), result["size_m"]):
+			dirty[kit_dir] = true
+	for kit_dir in dirty:
+		# The doc as read, one entry changed -- not build_doc, which would
+		# restamp "generated" on an index whose other entries this never saw.
+		var err := Indexer.write_index(kit_dir, docs[kit_dir])
+		if err != OK:
+			push_warning("Kit Browser: could not write index.json for %s (%s)"
+				% [kit_dir, err])
+	renderer.queue_free()
+	_progress_popup.hide()
+	_set_running(false)
+	var note := ("Regenerated the thumbnail for %s." % jobs[0]["name"]) \
+		if jobs.size() == 1 and drawn == 1 \
+		else "Regenerated %d of %d thumbnails." % [drawn, jobs.size()]
+	if not empty.is_empty():
+		note += " Nothing to draw in %s." % ", ".join(empty)
+	if not failures.is_empty():
+		note += " %d failed to render (see Output)." % failures.size()
+		for f in failures:
+			push_warning("Kit Browser: could not thumbnail %s" % f)
+	_status.text = note
+
+
+## Put a freshly drawn thumbnail on every tile showing it, and its measured
+## size on every copy of the asset the dock holds -- _shown carries duplicates
+## of _all's entries wherever grouping or tiers collapsed them.
+func _show_regenerated(thumb: String, size: Dictionary) -> void:
+	_icon_cache.erase(thumb)
+	var texture := _load_icon(thumb)
+	for list in [_all, _filtered, _shown]:
+		for a in list:
+			if Catalog.thumbnail_path(a) == thumb:
+				a["size_m"] = size
+	for i in _shown.size():
+		if i < _list.item_count and Catalog.thumbnail_path(_shown[i]) == thumb:
+			_list.set_item_icon(i, texture)
+			_list.set_item_tooltip(i, Catalog.describe(_shown[i]))
 
 
 ## Add the mesh to the edited scene as a child of its root, undoable in one step.

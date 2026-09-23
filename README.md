@@ -50,6 +50,21 @@ Then enable it under **Project > Project Settings > Plugins**.
   way to get thumbnails for a kit whose `index.json` another tool wrote (see
   below): that index is kept exactly as it is and only the pictures are
   redrawn.
+- **Excluded folders** — list folder names or globs (`Anims`, `*_old`) or
+  specific `res://` folders in **Settings…** and they are never indexed and
+  never listed. Use it for animation clips, audio, and anything else under a
+  root that is not a placeable asset: an animation-only glTF has nothing to
+  draw, so without an exclusion every **Index** renders it again only to drop
+  it. A bare name matches folders at any depth *below* a root, never the
+  folders the root itself sits in. Exclusions hide matching entries from
+  existing indexes straight away, with no re-index needed.
+- **Regenerate one thumbnail** — right-click a tile that stands for a single
+  mesh (any tile with grouping off, or a grouped tile with no variants) and
+  pick **Regenerate thumbnail**. With several tiles selected, right-clicking
+  one of them redraws them all. The asset is re-read from disk, so an edited
+  composite is drawn as it is now. Where the addon owns the kit's index, the
+  entry's size and timestamp are updated too, so the next **Index** does not
+  draw it again.
 - **Cancellable** — a long index run can be stopped from its progress popup.
   Kits already finished keep their new indexes, the kit in flight keeps what
   it rendered, and clicking **Index** again carries on from there.

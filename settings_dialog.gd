@@ -1,6 +1,7 @@
 @tool
 extends AcceptDialog
-## Roots, thumbnail resolution, Index, and the force re-index escape hatch.
+## Roots, excluded folders, thumbnail resolution, Index, and the force
+## re-index escape hatch.
 ## The dialog edits Settings directly and emits settings_changed on close,
 ## which is what makes the dock re-read them.
 
@@ -21,6 +22,8 @@ signal settings_changed
 var _roots: ItemList
 var _resolution: SpinBox
 var _tiers: LineEdit
+var _excludes: ItemList
+var _exclude_name: LineEdit
 ## Exposed so the dock can disable it while a run is in progress -- run_index
 ## stays owned by the dock, this dialog only signals the request.
 var index_button: Button
@@ -46,7 +49,7 @@ func _init() -> void:
 	# Tall enough that the roots list below never collapses to zero height
 	# (an AcceptDialog shrinks to fit its buttons when nothing else claims
 	# space, and an ItemList reports no minimum size of its own).
-	min_size = Vector2i(460, 380)
+	min_size = Vector2i(460, 540)
 	var box := VBoxContainer.new()
 	add_child(box)
 
@@ -105,6 +108,37 @@ func _init() -> void:
 	_tiers.focus_exited.connect(_store_tiers)
 	tier_row.add_child(_tiers)
 
+	var exclude_label := _label("Excluded folders — never indexed, never listed:")
+	exclude_label.tooltip_text = ("A folder name or glob (Anims, *_old) " +
+		"skips every folder of that name below a root. A res:// path skips " +
+		"that one folder. Use it for animation clips, audio and other files " +
+		"that are not placeable assets.")
+	box.add_child(exclude_label)
+	_excludes = ItemList.new()
+	_excludes.custom_minimum_size.y = 90
+	_excludes.tooltip_text = exclude_label.tooltip_text
+	box.add_child(_excludes)
+	var exclude_row := HBoxContainer.new()
+	box.add_child(exclude_row)
+	_exclude_name = LineEdit.new()
+	_exclude_name.placeholder_text = "Name or glob, e.g. Anims"
+	_exclude_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_exclude_name.tooltip_text = exclude_label.tooltip_text
+	_exclude_name.text_submitted.connect(func(_t: String) -> void: _add_exclude_name())
+	exclude_row.add_child(_exclude_name)
+	var add_name := Button.new()
+	add_name.text = "Add"
+	add_name.pressed.connect(_add_exclude_name)
+	exclude_row.add_child(add_name)
+	var add_dir := Button.new()
+	add_dir.text = "Add folder…"
+	add_dir.pressed.connect(_pick_exclude)
+	exclude_row.add_child(add_dir)
+	var remove_exclude := Button.new()
+	remove_exclude.text = "Remove"
+	remove_exclude.pressed.connect(_remove_exclude)
+	exclude_row.add_child(remove_exclude)
+
 	force_button = Button.new()
 	force_button.text = "Force re-index (rebuild all indexes and thumbnails)"
 	force_button.pressed.connect(func() -> void:
@@ -146,6 +180,7 @@ func _current() -> Dictionary:
 		"roots": Settings.roots(),
 		"resolution": Settings.resolution(),
 		"tiers": Settings.variant_tiers(),
+		"excludes": Settings.excluded_dirs(),
 	}
 
 
@@ -161,6 +196,9 @@ func _refresh() -> void:
 		_roots.add_item(root)
 	_resolution.set_value_no_signal(Settings.resolution())
 	_tiers.text = ", ".join(Settings.variant_tiers())
+	_excludes.clear()
+	for entry in Settings.excluded_dirs():
+		_excludes.add_item(entry)
 
 
 func _store_tiers() -> void:
@@ -196,4 +234,44 @@ func _remove_selected() -> void:
 	var roots := Settings.roots()
 	roots.remove_at(selected[0])
 	Settings.set_roots(roots)
+	_refresh()
+
+
+## Stored as typed, trimmed: the field is also how a res:// path the picker
+## cannot reach gets in, so it is not restricted to bare names.
+func add_exclude(entry: String) -> void:
+	var trimmed := entry.strip_edges().rstrip("/")
+	if trimmed.is_empty():
+		return
+	var excludes := Settings.excluded_dirs()
+	if not excludes.has(trimmed):
+		excludes.append(trimmed)
+		Settings.set_excluded_dirs(excludes)
+	_refresh()
+
+
+func _add_exclude_name() -> void:
+	add_exclude(_exclude_name.text)
+	_exclude_name.clear()
+
+
+func _pick_exclude() -> void:
+	var dialog := EditorFileDialog.new()
+	dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_DIR
+	dialog.access = EditorFileDialog.ACCESS_RESOURCES
+	dialog.dir_selected.connect(func(dir: String) -> void:
+		add_exclude(dir)
+		dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.5)
+
+
+func _remove_exclude() -> void:
+	var selected := _excludes.get_selected_items()
+	if selected.is_empty():
+		return
+	var excludes := Settings.excluded_dirs()
+	excludes.remove_at(selected[0])
+	Settings.set_excluded_dirs(excludes)
 	_refresh()

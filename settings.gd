@@ -7,6 +7,7 @@ extends RefCounted
 const ROOTS_KEY := "kit_browser/roots"
 const RESOLUTION_KEY := "kit_browser/thumbnail_resolution"
 const TIERS_KEY := "kit_browser/variant_tiers"
+const EXCLUDES_KEY := "kit_browser/excluded_dirs"
 const TILE_KEY := "kit_browser/tile_size"
 const TIER_CHOICE_KEY := "kit_browser/selected_tier"
 const DEFAULT_ROOT := "res://Assets/Kits"
@@ -31,6 +32,26 @@ static func roots() -> PackedStringArray:
 
 static func set_roots(value: PackedStringArray) -> void:
 	ProjectSettings.set_setting(ROOTS_KEY, value)
+	ProjectSettings.save()
+
+
+## Folders under the roots that are not kits and hold no assets worth a tile:
+## animation clips, audio, licences. Each entry is either a res:// path (that
+## folder and everything under it) or a bare name or glob ("Anims", "*_old")
+## matching a folder of that name at any depth below a root. Project truth,
+## like roots: what counts as content is a fact about the library.
+##
+## Earned by measurement, not tidiness: an animation-only glTF renders to
+## nothing and is dropped from the index, so every plain Index re-renders it
+## to learn that again. Trauma Trigger's Kitbash root carries 114 of those
+## (Animations/ 21, Player/Anims 93), every one re-drawn on every run.
+static func excluded_dirs() -> PackedStringArray:
+	return PackedStringArray(ProjectSettings.get_setting(EXCLUDES_KEY,
+		PackedStringArray()))
+
+
+static func set_excluded_dirs(value: PackedStringArray) -> void:
+	ProjectSettings.set_setting(EXCLUDES_KEY, value)
 	ProjectSettings.save()
 
 

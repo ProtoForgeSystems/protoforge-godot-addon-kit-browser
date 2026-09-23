@@ -84,12 +84,15 @@ static func annotate_families(entries: Array) -> void:
 ## one mesh file, the root is the kit: "." is returned alone. A root pointed
 ## straight at a flat asset folder (no subdirectories at all) used to yield
 ## an empty array and Index would silently do nothing.
-static func find_kits(root: String) -> PackedStringArray:
+static func find_kits(root: String,
+		excludes: PackedStringArray = PackedStringArray()) -> PackedStringArray:
 	var dir := DirAccess.open(root)
 	if dir == null:
 		return PackedStringArray()
 	var out := PackedStringArray()
 	for entry in dir.get_directories():
+		if is_excluded("%s/%s" % [root, entry], entry, excludes):
+			continue
 		if FileAccess.file_exists("%s/%s/index.json" % [root, entry]):
 			out.append(entry)
 			continue
@@ -102,13 +105,40 @@ static func find_kits(root: String) -> PackedStringArray:
 				break
 		if is_vendor:
 			for sub in subs:
-				out.append("%s/%s" % [entry, sub])
+				if not is_excluded("%s/%s/%s" % [root, entry, sub], sub, excludes):
+					out.append("%s/%s" % [entry, sub])
 		else:
 			out.append(entry)
 	out.sort()
 	if out.is_empty() and _has_mesh_file(dir):
 		out.append(".")
 	return out
+
+
+## Whether the directory at `path` is excluded by Settings.excluded_dirs().
+##
+## `rel` is that directory relative to the root it was reached from, and only
+## its components are tested against bare names: a name matches a folder at
+## any depth BELOW a root, never one the root itself sits in, so excluding
+## "Assets" cannot silently empty a library rooted at res://Assets/Kits.
+## A res:// entry matches that folder and everything under it, on whole path
+## components -- res://Kits/Anim does not swallow res://Kits/Animals.
+##
+## Bare names match case-insensitively: the same project is opened on
+## case-insensitive filesystems, where "anims" and "Anims" are one folder.
+static func is_excluded(path: String, rel: String, excludes: PackedStringArray) -> bool:
+	for raw in excludes:
+		var pattern := raw.strip_edges().rstrip("/")
+		if pattern.is_empty():
+			continue
+		if pattern.contains("://"):
+			if path == pattern or path.begins_with(pattern + "/"):
+				return true
+			continue
+		for part in rel.split("/", false):
+			if part.matchn(pattern):
+				return true
+	return false
 
 
 ## Non-recursive: at least one MESH_EXTS file sitting directly in the
@@ -213,9 +243,14 @@ static func _kit_present(dir_path: String) -> bool:
 ## dep_kits described on composite_deps. Passing none disables that check
 ## rather than declaring every dep unmet: with nowhere to look, "missing" is
 ## not a fact this can establish.
-static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArray()) -> Array:
+##
+## `excludes` (Settings.excluded_dirs()) prunes subfolders from the walk. Only
+## each folder's own name is tested as the walk descends -- its parents were
+## tested on the way down, and the kit folder itself by find_kits.
+static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArray(),
+		excludes: PackedStringArray = PackedStringArray()) -> Array:
 	var files := []
-	_scan_dir(kit_dir, "", files)
+	_scan_dir(kit_dir, "", files, excludes)
 	# A .tscn sitting beside a mesh of the same stem is that mesh's wrapper:
 	# the catalog already prefers it at placement time, so indexing it too
 	# would show every wrapped asset twice.
@@ -256,7 +291,8 @@ static func scan_kit(kit_dir: String, roots: PackedStringArray = PackedStringArr
 	return out
 
 
-static func _scan_dir(kit_dir: String, rel: String, out: Array) -> void:
+static func _scan_dir(kit_dir: String, rel: String, out: Array,
+		excludes: PackedStringArray) -> void:
 	var abs := kit_dir if rel.is_empty() else "%s/%s" % [kit_dir, rel]
 	var dir := DirAccess.open(abs)
 	if dir == null:
@@ -264,7 +300,10 @@ static func _scan_dir(kit_dir: String, rel: String, out: Array) -> void:
 	for sub in dir.get_directories():
 		if rel.is_empty() and sub == THUMB_DIR:
 			continue
-		_scan_dir(kit_dir, sub if rel.is_empty() else "%s/%s" % [rel, sub], out)
+		if is_excluded("%s/%s" % [abs, sub], sub, excludes):
+			continue
+		_scan_dir(kit_dir, sub if rel.is_empty() else "%s/%s" % [rel, sub], out,
+			excludes)
 	for file in dir.get_files():
 		var ext := file.get_extension().to_lower()
 		if not (MESH_EXTS.has(ext) or ext == "tscn"):
@@ -458,6 +497,37 @@ static func salvage(entries: Array, jobs: Array, done: int, dropped: Array,
 		out.append(entries[i])
 	annotate_families(out)
 	return out
+
+
+## Bring one entry up to date after its thumbnail was redrawn on its own, from
+## the dock's right-click menu. Stamping the file's current mtime is what stops
+## the next plain Index from rendering the same asset again; size_m is what the
+## render just measured, and an edited composite is exactly the asset whose
+## bounds move.
+##
+## Returns whether `doc` changed and wants writing: false for an index another
+## tool wrote (the thumbnail is redrawn, the index is not this addon's to
+## touch) and for a path the index does not list.
+static func refresh_entry(doc: Variant, rel: String, mtime: int,
+		size: Dictionary) -> bool:
+	if typeof(doc) != TYPE_DICTIONARY or not can_overwrite(doc, false):
+		return false
+	var hit: Dictionary = {}
+	for a in doc.get("assets", []):
+		if typeof(a) == TYPE_DICTIONARY and a.get("path", "") == rel:
+			hit = a
+			break
+	if hit.is_empty():
+		return false
+	hit["mtime"] = mtime
+	hit["size_m"] = size
+	# The whole doc is about to be rewritten, and JSON.parse_string gave every
+	# other entry's mtime back as a float -- the same "100.0" flip plan() guards
+	# against for kept entries.
+	for a in doc.get("assets", []):
+		if typeof(a) == TYPE_DICTIONARY and a.has("mtime"):
+			a["mtime"] = int(a["mtime"])
+	return true
 
 
 static func build_doc(entries: Array) -> Dictionary:

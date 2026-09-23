@@ -24,10 +24,17 @@ const THUMB_EXT := ".webp"
 ## from the merged one for long enough that the weapons looked deleted. Reading
 ## the source of truth means an attached kit cannot be missing from the browser
 ## because someone forgot to re-run a script.
+##
+## `excludes` defaults to Settings.excluded_dirs(). Applied here as well as at
+## index time, because an index already on disk -- a pipeline one, or one this
+## addon wrote before the folder was excluded -- still lists what is under it,
+## and an exclusion that only took effect after a re-index would look broken.
 static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
-		variant: String = VARIANT) -> Array:
+		variant: String = VARIANT, excludes: Variant = null) -> Array:
 	if kit_roots.is_empty():
 		kit_roots = Settings.roots()
+	var skip := Settings.excluded_dirs() if excludes == null \
+		else PackedStringArray(excludes)
 	var assets := []
 	# Overlapping roots (e.g. "res://assets" and "res://assets/CombatProps")
 	# can resolve the same kit directory twice -- once as a subdir kit of one
@@ -37,7 +44,7 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 	# kit names the same two or three kits.
 	var present := {}
 	for root in kit_roots:
-		for kit in find_kits(root):
+		for kit in find_kits(root, skip):
 			# "." means the root itself is the kit (a flat folder of meshes with
 			# no subdirectories); every other kit name nests under root.
 			var kit_dir := root if kit == "." else "%s/%s" % [root, kit]
@@ -59,6 +66,11 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 			for asset in doc.get("assets", []):
 				var entry: Dictionary = asset.duplicate()
 				entry["kit"] = kit_label
+				# Where this entry's index.json lives. The dock's single-asset
+				# redraw needs it to make the thumbnail folder and to write the
+				# entry back, and cannot recover it from thumb_path without
+				# assuming how thumbnails are laid out.
+				entry["kit_dir"] = kit_dir
 				var rel: String = asset.get("path", "")
 				if String(asset.get("kind", "")) == "composite":
 					# Composite paths are kit-root-relative whatever the
@@ -80,6 +92,8 @@ static func load_assets(kit_roots: PackedStringArray = PackedStringArray(),
 						else entry["mesh_path"]
 				entry["thumb_path"] = "%s/%s/%s%s" % [kit_dir, THUMB_DIR,
 					rel.get_basename(), THUMB_EXT]
+				if _under_excluded(String(entry["mesh_path"]), root, skip):
+					continue
 				_mark_unmet(entry, kit_roots, present)
 				assets.append(entry)
 	assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -114,6 +128,18 @@ static func _mark_unmet(entry: Dictionary, kit_roots: PackedStringArray,
 	entry.erase("family")
 
 
+## Whether an asset sits in an excluded folder. Tested against the folders
+## between the root and the file, so a bare name never matches the directories
+## the root itself lives in -- see Indexer.is_excluded.
+static func _under_excluded(mesh_path: String, root: String,
+		excludes: PackedStringArray) -> bool:
+	if excludes.is_empty():
+		return false
+	var dir := mesh_path.get_base_dir()
+	var rel := dir.trim_prefix(root.rstrip("/") + "/") if dir != root.rstrip("/") else ""
+	return Indexer.is_excluded(dir, rel, excludes)
+
+
 ## Kit names relative to the kits directory, e.g. "Rooftop", "Deckogon/Safehouse".
 ##
 ## A vendor directory holds several kits rather than being one, so a directory
@@ -128,14 +154,19 @@ static func _mark_unmet(entry: Dictionary, kit_roots: PackedStringArray,
 ## since grown real kit subdirectories must not also surface a stale
 ## root-level index left over from before the reorganization -- that would
 ## double-list the same assets under "." and under their new kit.
-static func find_kits(kits_dir: String = KITS_DIR) -> PackedStringArray:
+static func find_kits(kits_dir: String = KITS_DIR,
+		excludes: PackedStringArray = PackedStringArray()) -> PackedStringArray:
 	var out := PackedStringArray()
 	for entry in _subdirs(kits_dir):
+		if Indexer.is_excluded("%s/%s" % [kits_dir, entry], entry, excludes):
+			continue
 		if FileAccess.file_exists("%s/%s/index.json" % [kits_dir, entry]):
 			out.append(entry)
 			continue
 		for sub in _subdirs("%s/%s" % [kits_dir, entry]):
 			var nested := "%s/%s" % [entry, sub]
+			if Indexer.is_excluded("%s/%s" % [kits_dir, nested], sub, excludes):
+				continue
 			if FileAccess.file_exists("%s/%s/index.json" % [kits_dir, nested]):
 				out.append(nested)
 	out.sort()
